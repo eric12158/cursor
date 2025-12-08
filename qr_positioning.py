@@ -1,51 +1,5 @@
 import math
-
-def normalize_angle_deg(angle_deg):
-    """
-    将角度规范化到 [-180, 180] 度范围
-    """
-    while angle_deg > 180:
-        angle_deg -= 360
-    while angle_deg < -180:
-        angle_deg += 360
-    return angle_deg
-
-def normalize_angle_rad(angle_rad):
-    """
-    将角度规范化到 [-π, π] 弧度范围
-    """
-    while angle_rad > math.pi:
-        angle_rad -= 2 * math.pi
-    while angle_rad < -math.pi:
-        angle_rad += 2 * math.pi
-    return angle_rad
-
-def angle_diff_deg(angle1_deg, angle2_deg):
-    """
-    计算两个角度之间的最短角度差（度）
-    处理角度跨越±180°的情况，例如：179° 和 -179° 之间的差是 2°，而不是 358°
-    
-    参数:
-        angle1_deg: 第一个角度（度）
-        angle2_deg: 第二个角度（度）
-    
-    返回:
-        角度差（度），范围 [-180, 180]
-    """
-    # 先规范化两个角度
-    angle1 = normalize_angle_deg(angle1_deg)
-    angle2 = normalize_angle_deg(angle2_deg)
-    
-    # 计算差值
-    diff = angle1 - angle2
-    
-    # 规范化差值到 [-180, 180] 范围（取最短路径）
-    if diff > 180:
-        diff -= 360
-    elif diff < -180:
-        diff += 360
-    
-    return diff
+from angle_utils import normalize_angle_deg, normalize_angle_rad, angle_diff_deg
 
 def getDrAndDl(pA, pB):
     dx = pB[0] - pA[0]

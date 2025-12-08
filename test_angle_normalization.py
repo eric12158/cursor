@@ -4,7 +4,7 @@
 """
 
 import math
-from qr_positioning import angle_diff_deg, normalize_angle_deg
+from angle_utils import angle_diff_deg, normalize_angle_deg
 
 print("=" * 60)
 print("角度规范化测试")
