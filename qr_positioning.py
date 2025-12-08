@@ -1,0 +1,52 @@
+import math
+from angle_utils import normalize_angle_deg, normalize_angle_rad, angle_diff_deg
+
+def getDrAndDl(pA, pB):
+    dx = pB[0] - pA[0]
+    dy = pB[1] - pA[1]
+    print(dx,dy)
+    ddr1 =  math.atan2(dx,dy)  
+    
+    # 规范化二维码角度
+    normalized_angle = normalize_angle_deg(pA[2])
+    pointR = math.radians(normalized_angle)
+    
+    ddr2 = ddr1 + pointR
+    # 规范化相对角度
+    ddr2 = normalize_angle_rad(ddr2)
+    
+    print(f"弧度: {ddr2},两者之间的角度:{ddr1}, 长度: {math.sqrt(dx*dx + dy*dy)} ")
+    return ddr2, math.sqrt(dx*dx + dy*dy)  # 修复：添加返回值
+ 
+def getPointB(pointB, dr, dl, c):
+    # c 已经是规范化后的角度差，直接使用
+    pointR = math.radians(c)
+    
+    d = dr + pointR
+    # 规范化最终角度
+    d = normalize_angle_rad(d)
+    
+    print(f"需要旋转的弧度 {pointR}, 最终弧度: {d}")
+
+    l1= dl* math.cos(d)
+    l2= dl* math.sin(d) 
+
+    print(f"偏移量:{l1},{l2}")
+    x1 = pointB[0] + l2
+    y1 = pointB[1] + l1
+    return [x1,y1,pointB[2]]
+
+if __name__ == "__main__":
+
+    a=[546.727,291.281,-2.130]   #二维码坐标
+    b=[403.19048982679544,168.1912881500751]         #调试坐标
+    dr, dl = getDrAndDl(a,b)  # 修复：使用返回值
+
+    point =[546.727,291.281,-2.130]   #校验（二维码坐标）
+    
+    # 修复：使用角度规范化计算角度差，处理角度跨越±180°的情况
+    c = angle_diff_deg(a[2], point[2])
+    print(f"角度差: {a[2]}° - {point[2]}° = {c}°")
+    
+    result = getPointB(point, dr, dl, c)    
+    print(f"坐标点: {result[0]},{result[1]}, {result[2]}")
