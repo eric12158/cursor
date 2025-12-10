@@ -1,6 +1,6 @@
 def normalize_angle(angle):
     """
-    归一化角度值：
+    归一化角度值（无判断版本）：
     - 如果角度是负数，将其转换为对应的正数（加90度）
     - 如果角度是正数，保持不变
     
@@ -15,11 +15,12 @@ def normalize_angle(angle):
         normalize_angle(-43.4) -> 46.6
         normalize_angle(4.453) -> 4.453
         normalize_angle(43.543) -> 43.543
+    
+    实现原理：
+        使用布尔值特性：angle < 0 在Python中返回True(1)或False(0)
+        当angle < 0时，加90；当angle >= 0时，加0
     """
-    if angle < 0:
-        return angle + 90
-    else:
-        return angle
+    return angle + 90 * (angle < 0)
 
 
 # 测试函数
