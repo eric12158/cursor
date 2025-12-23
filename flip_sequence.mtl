@@ -1,0 +1,29 @@
+newmtl platform
+Kd 0.70 0.70 0.70
+Ka 0.10 0.10 0.10
+Ks 0.05 0.05 0.05
+Ns 10.0
+
+newmtl stop
+Kd 0.90 0.80 0.10
+Ka 0.10 0.10 0.05
+Ks 0.05 0.05 0.05
+Ns 10.0
+
+newmtl plate_step1
+Kd 0.75 0.10 0.10
+Ka 0.10 0.02 0.02
+Ks 0.05 0.05 0.05
+Ns 10.0
+
+newmtl plate_step2
+Kd 0.10 0.55 0.90
+Ka 0.02 0.06 0.10
+Ks 0.05 0.05 0.05
+Ns 10.0
+
+newmtl plate_step3
+Kd 0.10 0.75 0.20
+Ka 0.02 0.10 0.03
+Ks 0.05 0.05 0.05
+Ns 10.0
