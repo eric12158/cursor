@@ -4,19 +4,29 @@ import glob
 import os
 import argparse
 
-def calibrate_and_measure(image_folder, pattern_size=(7, 7), circle_spacing=1.5):
+def calibrate_and_measure(image_folder, pattern_size=(7, 7), circle_spacing=5.0):
     # ---------------------------------------------------------
-    # 1. 配置更强的斑点检测器
+    # 1. 优化后的极速参数 (针对清晰标定板)
     # ---------------------------------------------------------
     blobParams = cv2.SimpleBlobDetector_Params()
+    
+    # 面积过滤：根据你的图片，圆点应该挺明显的
     blobParams.filterByArea = True
-    blobParams.minArea = 10      
-    blobParams.maxArea = 500000  
-    blobParams.filterByCircularity = False 
-    blobParams.filterByConvexity = False
-    blobParams.filterByInertia = False 
+    blobParams.minArea = 50      # 调大最小面积，忽略噪点
+    blobParams.maxArea = 100000  # 稍微限制最大面积
+    
+    # 形状过滤：开启这些能极大提高速度！
+    blobParams.filterByCircularity = True
+    blobParams.minCircularity = 0.7  # 必须比较圆
+    
+    blobParams.filterByConvexity = True
+    blobParams.minConvexity = 0.8    # 必须是凸形状
+    
+    blobParams.filterByInertia = True
+    blobParams.minInertiaRatio = 0.4 # 允许一定的椭圆度(侧拍)
+    
     blobParams.filterByColor = True
-    blobParams.blobColor = 0 # 黑色圆点
+    blobParams.blobColor = 0 # 寻找黑色圆点
     
     blobDetector = cv2.SimpleBlobDetector_create(blobParams)
     # ---------------------------------------------------------
@@ -41,7 +51,6 @@ def calibrate_and_measure(image_folder, pattern_size=(7, 7), circle_spacing=1.5)
     print(f"--> 开始处理 {len(images)} 张图片...")
     print(f"--> 标定板: {pattern_size}, 间距: {circle_spacing}mm")
     
-    # 记录图像尺寸 (width, height)
     img_size = None 
 
     for fname in images:
@@ -49,11 +58,11 @@ def calibrate_and_measure(image_folder, pattern_size=(7, 7), circle_spacing=1.5)
         if img is None: continue
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # 记录尺寸 (宽, 高)
         if img_size is None:
             h, w = gray.shape[:2]
             img_size = (w, h)
 
+        # 这里的 findCirclesGrid 如果参数不对会很慢，现在加了过滤应该很快
         ret, centers = cv2.findCirclesGrid(
             gray, 
             pattern_size, 
@@ -92,14 +101,10 @@ def calibrate_and_measure(image_folder, pattern_size=(7, 7), circle_spacing=1.5)
         print("\n错误：所有图片均识别失败。")
 
 if __name__ == "__main__":
-    # 你的默认配置
     TARGET_DIR = r"D:\Other\Users\ENGINEER\Desktop\cursor-cursor-2d-to-2-5d-camera-2b90\image_folder"
     
-    # --- 修改这里：尝试将间距从 1.5 改为 1.6 ---
-    # 如果你是 10mm 总长 7个点，那间距可能是 10/6 = 1.666
-    # 这里我们根据 385 -> 410 的比例反推，填 1.6 试试
-    SPACING = 1.6 
-    
+    # 你的参数
+    SPACING = 5.0 # mm
     ROWS = 7
     COLS = 7
     
