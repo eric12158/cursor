@@ -49,7 +49,7 @@ def calibrate_and_measure(image_folder, pattern_size=(7, 7), circle_spacing=1.5)
         if img is None: continue
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # 记录尺寸 (宽, 高) - 注意：OpenCV要求是 (width, height)
+        # 记录尺寸 (宽, 高)
         if img_size is None:
             h, w = gray.shape[:2]
             img_size = (w, h)
@@ -72,7 +72,6 @@ def calibrate_and_measure(image_folder, pattern_size=(7, 7), circle_spacing=1.5)
     if len(objpoints) > 0:
         print(f"\n--> 正在进行标定计算 (基于 {len(objpoints)} 张有效图片)...")
         
-        # --- 修复点：传入正确的 img_size (w, h) ---
         ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, img_size, None, None)
         
         print("\n" + "="*50)
@@ -95,7 +94,12 @@ def calibrate_and_measure(image_folder, pattern_size=(7, 7), circle_spacing=1.5)
 if __name__ == "__main__":
     # 你的默认配置
     TARGET_DIR = r"D:\Other\Users\ENGINEER\Desktop\cursor-cursor-2d-to-2-5d-camera-2b90\image_folder"
-    SPACING = 1.5 # mm
+    
+    # --- 修改这里：尝试将间距从 1.5 改为 1.6 ---
+    # 如果你是 10mm 总长 7个点，那间距可能是 10/6 = 1.666
+    # 这里我们根据 385 -> 410 的比例反推，填 1.6 试试
+    SPACING = 1.6 
+    
     ROWS = 7
     COLS = 7
     
