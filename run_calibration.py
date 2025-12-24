@@ -5,7 +5,7 @@ import os
 import argparse
 import sys
 
-def calibrate_camera_circle(image_folder, pattern_size=(7, 7), circle_spacing=10.0):
+def calibrate_camera_circle(image_folder, pattern_size=(7, 7), circle_spacing=1.5):
     """
     Args:
         image_folder: 图片文件夹路径
@@ -15,6 +15,7 @@ def calibrate_camera_circle(image_folder, pattern_size=(7, 7), circle_spacing=10
     # 检查路径是否存在
     if not os.path.isdir(image_folder):
         print(f"错误: 路径 '{image_folder}' 不存在或不是一个目录。")
+        print("请检查路径拼写，或确保文件夹已创建。")
         return
 
     # 准备对象点 (0,0,0), (1,0,0), (2,0,0) ...
@@ -29,7 +30,6 @@ def calibrate_camera_circle(image_folder, pattern_size=(7, 7), circle_spacing=10
     extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
     images = []
     for ext in extensions:
-        # 兼容不同系统的路径分隔符
         search_path = os.path.join(image_folder, ext)
         images.extend(glob.glob(search_path))
     
@@ -39,6 +39,7 @@ def calibrate_camera_circle(image_folder, pattern_size=(7, 7), circle_spacing=10
 
     print(f"--> 找到 {len(images)} 张图片，开始检测圆点...")
     print(f"--> 标定板规格: {pattern_size[0]}x{pattern_size[1]}, 间距: {circle_spacing}mm")
+    print(f"--> 图片文件夹: {image_folder}")
     
     found_count = 0
 
@@ -84,16 +85,25 @@ def calibrate_camera_circle(image_folder, pattern_size=(7, 7), circle_spacing=10
         print("请检查：1. 行列数是否填对 2. 图片是否清晰 3. 是否有反光干扰")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="相机标定工具 (圆点板)")
+    # --- 用户配置区域 ---
     
-    # 必须参数
-    parser.add_argument('--dir', type=str, required=True, help='图片所在的文件夹路径')
+    # 你的图片文件夹绝对路径 (注意前面加 r 防止转义)
+    TARGET_DIR = r"D:\Other\Users\ENGINEER\Desktop\cursor-cursor-2d-to-2-5d-camera-2b90\image_folder"
     
-    # 可选参数
-    parser.add_argument('--spacing', type=float, default=10.0, help='相邻圆心的实际距离 (mm)，默认10.0')
-    parser.add_argument('--rows', type=int, default=7, help='圆点行数，默认7')
-    parser.add_argument('--cols', type=int, default=7, help='圆点列数，默认7')
-
+    # 你的标定板参数 (请确认间距是否为1.5mm，若不是请修改)
+    SPACING = 1.5   # mm
+    ROWS = 7
+    COLS = 7
+    
+    # ------------------
+    
+    # 优先使用命令行参数，如果没有则使用上面的默认配置
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dir', type=str, default=TARGET_DIR)
+    parser.add_argument('--spacing', type=float, default=SPACING)
+    parser.add_argument('--rows', type=int, default=ROWS)
+    parser.add_argument('--cols', type=int, default=COLS)
+    
     args = parser.parse_args()
     
     calibrate_camera_circle(args.dir, (args.cols, args.rows), args.spacing)
