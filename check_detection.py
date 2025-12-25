@@ -104,7 +104,13 @@ class CalibrationVerifier:
         if not file_path: return
         
         # 读取图片
-        self.img_original = cv2.imread(file_path)
+        # Handle Chinese paths or special characters properly
+        try:
+            self.img_original = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8), -1)
+        except Exception as e:
+            print(f"Error reading file with imdecode: {e}")
+            self.img_original = cv2.imread(file_path)
+            
         if self.img_original is None:
             print("无法读取图片")
             return
