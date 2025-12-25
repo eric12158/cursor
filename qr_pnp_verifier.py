@@ -7,16 +7,11 @@ import sys
 
 # --- 1. 标定参数配置 (用户提供) ---
 # 内参矩阵 (Camera Matrix)
-# 注意：之前的 712.688 像素焦距导致距离计算偏小 (127mm vs 实际420mm)。
-# 经过推算 (420/127.2 ≈ 3.3)，原始 Halcon 标定中 Sx=8.3um 可能是真实像素尺寸的 3.3 倍左右（例如真实是 2.4um）。
-# 因此，为了得到正确的距离，我们需要修正焦距 (fx, fy)。
-# 修正系数: 3.3
-FOCAL_SCALE = 3.3
-
+# fx = f/Sx, fy = f/Sy, cx, cy
 CAMERA_MATRIX = np.array([
-    [712.688 * FOCAL_SCALE,   0.0,                    2725.88],
-    [0.0,                     712.671 * FOCAL_SCALE,  1817.03],
-    [0.0,                     0.0,                    1.0    ]
+    [712.688,   0.0,      2725.88],
+    [0.0,       712.671,  1817.03],
+    [0.0,       0.0,      1.0    ]
 ], dtype=np.float64)
 
 # 畸变系数 (Distortion Coefficients)
@@ -79,19 +74,25 @@ class CalibrationVerifier:
                     # Calculate distance
                     dist_mm = np.linalg.norm(tvec)
                     
+                    # Calculate Pixel Width for debugging
+                    # Distance between point 0 (TL) and 1 (TR)
+                    pixel_width = np.linalg.norm(img_points[0] - img_points[1])
+                    
                     # Draw on display image
                     self.draw_result(img_points, rvec, tvec, dist_mm)
                     
                     # Print info
                     print(f"\n--- 二维码 #{i+1} ---")
                     print(f"内容: {decoded_info[i] if i < len(decoded_info) else 'Unknown'}")
-                    print(f"距离相机: {dist_mm:.4f} mm")
+                    print(f"检测到的像素宽度 (边长): {pixel_width:.1f} pixels")
+                    print(f"当前计算距离: {dist_mm:.4f} mm")
                     print(f"相机坐标 (X, Y, Z): ({tvec[0][0]:.2f}, {tvec[1][0]:.2f}, {tvec[2][0]:.2f})")
-                    
-                    # Convert rotation vector to Euler angles for readability
-                    rot_mat, _ = cv2.Rodrigues(rvec)
-                    # Simple check of rotation, e.g., viewing angle
-                    print(f"旋转向量 (rvec): {rvec.flatten()}")
+                    print("-" * 30)
+                    print("【结果分析】")
+                    print(f"当前使用焦距 f_pixel ≈ {CAMERA_MATRIX[0,0]:.1f}")
+                    print(f"如果真实距离是 420mm，则理论上二维码在图像中应占: {CAMERA_MATRIX[0,0] * self.qr_size / 420.0:.1f} 像素")
+                    print(f"如果真实距离是 420mm 且像素宽度正确，则焦距 f_pixel 应该约为: {420.0 * pixel_width / self.qr_size:.1f}")
+                    print("-" * 30)
 
         else:
             print("未检测到二维码。请确保图片清晰且二维码完整。")
