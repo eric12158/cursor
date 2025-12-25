@@ -6,12 +6,20 @@ import math
 import sys
 
 # --- 1. 标定参数配置 (用户提供) ---
+
+# [修正] 手动修正焦距，基于之前的验证结果
+# 原始计算: f_pixel = 712.7 (基于 Halcon 输出的 f=5.9mm, Sx=8.3um)
+# 实际验证: 距离 420mm 时，二维码占 243.1 像素，反推焦距应为 3403.4
+# 原因分析: Halcon 的 Sx 极有可能填错了，真实 Sx 约为 1.74um (5.9mm / 3403 * 1000)
+# 结论: 我们必须使用修正后的焦距才能得到正确的物理距离。
+
+CORRECTED_F = 3403.4
+
 # 内参矩阵 (Camera Matrix)
-# fx = f/Sx, fy = f/Sy, cx, cy
 CAMERA_MATRIX = np.array([
-    [712.688,   0.0,      2725.88],
-    [0.0,       712.671,  1817.03],
-    [0.0,       0.0,      1.0    ]
+    [CORRECTED_F,   0.0,          2725.88], # fx
+    [0.0,           CORRECTED_F,  1817.03], # fy
+    [0.0,           0.0,          1.0    ]
 ], dtype=np.float64)
 
 # 畸变系数 (Distortion Coefficients)
@@ -65,16 +73,6 @@ class CalibrationVerifier:
                 # Verify points are valid floats
                 img_points = img_points.astype(np.float64)
                 
-                # Calculate the center of the QR code
-                qr_center_x = np.mean(img_points[:, 0])
-                qr_center_y = np.mean(img_points[:, 1])
-                
-                print(f"二维码中心坐标 (Pixel): ({qr_center_x:.2f}, {qr_center_y:.2f})")
-                print(f"图像中心坐标 (Pixel): ({self.img_original.shape[1]/2:.2f}, {self.img_original.shape[0]/2:.2f})")
-                
-                # Check if QR code is near the center of the image
-                # In perspective projection, objects at the edge might appear distorted or have different scales
-                
                 # Solve PnP
                 # We want to find the rotation (rvec) and translation (tvec) 
                 # that minimizes reprojection error from obj_points to img_points
@@ -85,7 +83,6 @@ class CalibrationVerifier:
                     dist_mm = np.linalg.norm(tvec)
                     
                     # Calculate Pixel Width for debugging
-                    # Distance between point 0 (TL) and 1 (TR)
                     pixel_width = np.linalg.norm(img_points[0] - img_points[1])
                     
                     # Draw on display image
@@ -97,12 +94,6 @@ class CalibrationVerifier:
                     print(f"检测到的像素宽度 (边长): {pixel_width:.1f} pixels")
                     print(f"当前计算距离: {dist_mm:.4f} mm")
                     print(f"相机坐标 (X, Y, Z): ({tvec[0][0]:.2f}, {tvec[1][0]:.2f}, {tvec[2][0]:.2f})")
-                    print("-" * 30)
-                    print("【结果分析】")
-                    print(f"当前使用焦距 f_pixel ≈ {CAMERA_MATRIX[0,0]:.1f}")
-                    print(f"如果真实距离是 420mm，则理论上二维码在图像中应占: {CAMERA_MATRIX[0,0] * self.qr_size / 420.0:.1f} 像素")
-                    print(f"如果真实距离是 420mm 且像素宽度正确，则焦距 f_pixel 应该约为: {420.0 * pixel_width / self.qr_size:.1f}")
-                    print("-" * 30)
 
         else:
             print("未检测到二维码。请确保图片清晰且二维码完整。")
