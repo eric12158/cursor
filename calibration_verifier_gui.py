@@ -106,6 +106,25 @@ class CalibrationVerifier:
             self.points = []
             self.update_display()
 
+    def calculate_camera_distance(self, u, v):
+        """
+        Calculate the distance from the camera center to the point (u, v) on the Z=0 plane.
+        """
+        # 1. Get world coordinates on Z=0 plane
+        wx, wy = self.pixel_to_world(u, v)
+        wz = 0.0
+        
+        # 2. Convert world point to camera coordinates
+        # P_cam = R * P_world + T
+        P_world = np.array([[wx], [wy], [wz]], dtype=np.float64)
+        R, _ = cv2.Rodrigues(RVEC)
+        P_cam = R @ P_world + TVEC.reshape(3, 1)
+        
+        # 3. Calculate Euclidean distance from camera origin (0,0,0) to P_cam
+        dist_cam = np.linalg.norm(P_cam)
+        
+        return dist_cam, P_cam.flatten()
+
     def update_display(self):
         if self.img_original is None:
             return
@@ -115,7 +134,7 @@ class CalibrationVerifier:
         
         # Draw text info
         info_color = (0, 255, 0)
-        cv2.putText(self.img_display, "Left Click: Select Point | Right Click: Clear", (10, 30), 
+        cv2.putText(self.img_display, "Left Click: Select QR Code Center | Right Click: Clear", (10, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, info_color, 2)
 
         # Draw points and lines
@@ -126,38 +145,24 @@ class CalibrationVerifier:
             
             cv2.circle(self.img_display, (disp_x, disp_y), 5, (0, 0, 255), -1)
             
-            # Calculate world coord
-            wx, wy = self.pixel_to_world(pt[0], pt[1])
-            coord_text = f"P{i+1}: ({wx:.2f}, {wy:.2f}) mm"
-            cv2.putText(self.img_display, coord_text, (disp_x + 10, disp_y), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-
-        # Calculate distance if 2 points exist
-        if len(self.points) == 2:
-            p1 = self.points[0]
-            p2 = self.points[1]
+            # Calculate distance to camera
+            dist_cam, p_cam = self.calculate_camera_distance(pt[0], pt[1])
             
-            disp_p1 = (int(p1[0] * self.scale_factor), int(p1[1] * self.scale_factor))
-            disp_p2 = (int(p2[0] * self.scale_factor), int(p2[1] * self.scale_factor))
+            # Display info
+            text_lines = [
+                f"Dist to Cam: {dist_cam:.2f} mm",
+                f"Cam Coords: ({p_cam[0]:.1f}, {p_cam[1]:.1f}, {p_cam[2]:.1f})"
+            ]
             
-            cv2.line(self.img_display, disp_p1, disp_p2, (255, 0, 0), 2)
+            for j, line in enumerate(text_lines):
+                y_offset = disp_y + 20 + (j * 20)
+                # Background
+                (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(self.img_display, (disp_x + 10, y_offset - th), (disp_x + 10 + tw, y_offset + 5), (0,0,0), -1)
+                cv2.putText(self.img_display, line, (disp_x + 10, y_offset), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             
-            wx1, wy1 = self.pixel_to_world(p1[0], p1[1])
-            wx2, wy2 = self.pixel_to_world(p2[0], p2[1])
-            
-            dist = math.sqrt((wx1 - wx2)**2 + (wy1 - wy2)**2)
-            
-            mid_x = (disp_p1[0] + disp_p2[0]) // 2
-            mid_y = (disp_p1[1] + disp_p2[1]) // 2
-            
-            result_text = f"Distance: {dist:.4f} mm"
-            print(f"测量结果: 点1({wx1:.2f}, {wy1:.2f}) -> 点2({wx2:.2f}, {wy2:.2f}) | 距离: {dist:.4f} mm")
-            
-            # Draw text with background for visibility
-            (text_w, text_h), _ = cv2.getTextSize(result_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
-            cv2.rectangle(self.img_display, (mid_x, mid_y - text_h - 10), (mid_x + text_w, mid_y + 10), (0,0,0), -1)
-            cv2.putText(self.img_display, result_text, (mid_x, mid_y), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+            print(f"点{i+1} - 像素:({pt[0]:.1f}, {pt[1]:.1f}) -> 相机距离: {dist_cam:.4f} mm | 相机坐标(XYZ): {p_cam}")
 
         cv2.imshow("Verification Tool", self.img_display)
 
