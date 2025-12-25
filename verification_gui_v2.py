@@ -10,7 +10,7 @@ import math
 class VerificationApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("相机测距验证工具 V2.2 (自动分辨率修正版)")
+        self.root.title("相机测距验证工具 V2.3 (重投影验证版)")
         self.root.geometry("1400x900")
         
         # 默认参数
@@ -38,7 +38,6 @@ class VerificationApp:
         
         tk.Button(top_frame, text="从 JSON 文件加载参数", command=self.load_params_from_file, bg="#e3f2fd").pack(side=tk.LEFT, padx=5)
         
-        # 显示标定时的分辨率
         self.lbl_calib_res = tk.Label(top_frame, text="", fg="gray")
         self.lbl_calib_res.pack(side=tk.LEFT, padx=20)
 
@@ -55,6 +54,9 @@ class VerificationApp:
         tk.Entry(mid_frame, textvariable=self.qr_size_var, width=8).pack(side=tk.LEFT)
         
         tk.Button(mid_frame, text="执行测距与姿态解算", command=self.run_measurement, bg="#fff3e0", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=20)
+        
+        self.check_reproject = tk.BooleanVar(value=True)
+        tk.Checkbutton(mid_frame, text="显示重投影验证点(黄色)", variable=self.check_reproject).pack(side=tk.LEFT, padx=10)
         
         # 3. 主视图
         main_paned = tk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -94,7 +96,6 @@ class VerificationApp:
             self.camera_matrix = np.array(data["camera_matrix"], dtype=np.float64)
             self.dist_coeffs = np.array(data["dist_coeffs"], dtype=np.float64)
             
-            # 读取标定时的分辨率
             if "image_size" in data:
                 self.calib_img_size = tuple(data["image_size"]) # (w, h)
                 self.lbl_calib_res.config(text=f"标定分辨率: {self.calib_img_size[0]}x{self.calib_img_size[1]}")
@@ -142,11 +143,8 @@ class VerificationApp:
             return self.camera_matrix, 1.0
             
         calib_w, calib_h = self.calib_img_size
-        
-        # 计算缩放因子 (以宽度为准)
         scale_factor = current_w / float(calib_w)
         
-        # 如果尺寸差异很小，就不处理
         if abs(scale_factor - 1.0) < 0.01:
             return self.camera_matrix, 1.0
             
@@ -203,13 +201,13 @@ class VerificationApp:
         for i in range(len(points)):
             img_points = points[i].reshape(4, 2).astype(np.float64)
             
-            # PnP 解算 (使用适配后的 current_matrix)
+            # PnP 解算
             success, rvec, tvec = cv2.solvePnP(obj_points, img_points, current_matrix, self.dist_coeffs)
             
             if success:
                 dist_mm = np.linalg.norm(tvec)
                 
-                # --- 计算欧拉角 (旋转角度) ---
+                # --- 计算欧拉角 ---
                 rmat, _ = cv2.Rodrigues(rvec)
                 sy = math.sqrt(rmat[0,0] * rmat[0,0] +  rmat[1,0] * rmat[1,0])
                 singular = sy < 1e-6
@@ -228,7 +226,7 @@ class VerificationApp:
                 rz = math.degrees(z)
                 
                 # 绘制结果
-                self._draw_overlay(img_temp, img_points, rvec, tvec, dist_mm, (rx, ry, rz), i, current_matrix)
+                self._draw_overlay(img_temp, img_points, rvec, tvec, dist_mm, (rx, ry, rz), i, current_matrix, obj_points)
                 
                 # 详细日志
                 self.log(f"\n--- QR Code #{i+1} ---")
@@ -242,7 +240,7 @@ class VerificationApp:
         self.current_cv_img = img_temp
         self.display_image()
 
-    def _draw_overlay(self, img, pts, rvec, tvec, dist, angles, idx, camera_mtx):
+    def _draw_overlay(self, img, pts, rvec, tvec, dist, angles, idx, camera_mtx, obj_points):
         pts = pts.astype(np.int32)
         rx, ry, rz = angles
         
@@ -267,7 +265,15 @@ class VerificationApp:
         cv2.line(img, origin, tuple(imgpts[2].ravel()), (0, 255, 0), 3) # Y
         cv2.line(img, origin, tuple(imgpts[3].ravel()), (255, 0, 0), 3) # Z
         
-        # 4. 显示文字
+        # 4. 重投影验证 (Yellow Circles)
+        if self.check_reproject.get():
+            reproj_pts, _ = cv2.projectPoints(obj_points, rvec, tvec, camera_mtx, self.dist_coeffs)
+            reproj_pts = reproj_pts.reshape(-1, 2).astype(np.int32)
+            for pt in reproj_pts:
+                # 画空心黄圈，套在红色实心点外面
+                cv2.circle(img, tuple(pt), 8, (0, 255, 255), 2)
+        
+        # 5. 显示文字
         center_x = int(np.mean(pts[:,0]))
         center_y = int(np.mean(pts[:,1]))
         

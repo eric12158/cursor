@@ -17,7 +17,7 @@ DEFAULT_CIRCLE_SPACING = 5.0  # mm
 class CalibrationApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("相机标定工具 V2.0 - 专业版")
+        self.root.title("相机标定工具 V2.3 (含点序可视化)")
         self.root.geometry("1400x900")
         
         # 状态变量
@@ -172,13 +172,10 @@ class CalibrationApp:
             try:
                 img = cv2.imdecode(np.fromfile(fpath, dtype=np.uint8), -1)
                 if img is None: raise Exception("Decode failed")
-                
-                # Check channel count
-                if len(img.shape) == 2: # Grayscale
+                if len(img.shape) == 2:
                     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-                elif img.shape[2] == 4: # RGBA
+                elif img.shape[2] == 4:
                     img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                    
             except:
                 self.root.after(0, lambda n=fname: self.log(f"无法读取图片: {n}"))
                 continue
@@ -186,12 +183,9 @@ class CalibrationApp:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             
             # 关键：查找圆点阵列
-            # 使用对称圆点网格 (Symmetric Circles Grid)
-            # 也可以尝试 CALIB_CB_CLUSTERING 以增强鲁棒性
             flags = cv2.CALIB_CB_SYMMETRIC_GRID
             ret, centers = cv2.findCirclesGrid(gray, (cols, rows), flags=flags)
             
-            # 如果没找到，尝试 blob detector 增强 (可选，会变慢)
             if not ret:
                  params = cv2.SimpleBlobDetector_Params()
                  params.maxArea = 100000
@@ -200,8 +194,6 @@ class CalibrationApp:
                  blobDetector = cv2.SimpleBlobDetector_create(params)
                  ret, centers = cv2.findCirclesGrid(gray, (cols, rows), flags=flags | cv2.CALIB_CB_CLUSTERING, blobDetector=blobDetector)
 
-            # 存储结果
-            # 注意：不保存原图 img 以节省内存，只保存路径和角点
             data = {
                 'path': fpath,
                 'name': fname,
@@ -219,7 +211,6 @@ class CalibrationApp:
                 color_code = "#ffcccc" # 浅红
                 tag = " [FAIL]"
                 
-            # 更新UI列表
             self.root.after(0, lambda d=data, c=color_code: self._add_list_item(d, c))
             
         self.root.after(0, lambda: self._detection_finished(success_count, len(files)))
@@ -256,7 +247,6 @@ class CalibrationApp:
         
         data = self.images_data[idx]
         
-        # 重新读取图片用于显示
         try:
             img = cv2.imdecode(np.fromfile(data['path'], dtype=np.uint8), -1)
         except:
@@ -268,7 +258,19 @@ class CalibrationApp:
             cols = self.cols_var.get()
             cv2.drawChessboardCorners(img, (cols, rows), data['corners'], data['found'])
             
-        # 重置视图并显示
+            # --- 关键：可视化点序 ---
+            # 绘制每个点的索引数字，帮助排查对应关系
+            for i, pt in enumerate(data['corners']):
+                pt = tuple(pt[0].astype(int))
+                # 0号点画红色，最后一个点画蓝色，中间画黄色
+                if i == 0: color = (0, 0, 255) 
+                elif i == len(data['corners'])-1: color = (255, 0, 0)
+                else: color = (0, 255, 255)
+                
+                cv2.circle(img, pt, 5, color, -1)
+                # 绘制数字，字号适中
+                cv2.putText(img, str(i), (pt[0]+8, pt[1]-8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
         self.scale = 1.0
         self.offset_x = 0
         self.offset_y = 0
@@ -278,7 +280,6 @@ class CalibrationApp:
     def display_image(self):
         if self.current_cv_img is None: return
         
-        # BGR -> RGB
         img_rgb = cv2.cvtColor(self.current_cv_img, cv2.COLOR_BGR2RGB)
         h, w = img_rgb.shape[:2]
         
@@ -288,20 +289,15 @@ class CalibrationApp:
         if canvas_w < 10: canvas_w = 800
         if canvas_h < 10: canvas_h = 600
         
-        # 1. 计算适应窗口的基础缩放比
         scale_fit = min(canvas_w / w, canvas_h / h)
-        
-        # 2. 应用用户缩放
         final_scale = scale_fit * self.scale
         
         new_w = int(w * final_scale)
         new_h = int(h * final_scale)
         
-        # 避免过大导致内存爆炸或过小看不见
         if new_w < 10 or new_h < 10: return
-        if new_w > 10000 or new_h > 10000: return # 限制最大渲染尺寸
+        if new_w > 10000 or new_h > 10000: return 
         
-        # 缩放
         img_resized = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
         
         self.pil_img = Image.fromarray(img_resized)
@@ -309,7 +305,6 @@ class CalibrationApp:
         
         self.canvas.delete("all")
         
-        # 计算居中位置 + 偏移
         cx = canvas_w // 2 + self.offset_x
         cy = canvas_h // 2 + self.offset_y
         
@@ -341,7 +336,6 @@ class CalibrationApp:
 
     # --- 标定核心逻辑 ---
     def run_calibration(self):
-        # 1. 验证输入
         try:
             spacing = self.spacing_var.get()
             if spacing <= 0: raise ValueError
@@ -361,27 +355,26 @@ class CalibrationApp:
         self.log(f"有效图片数: {len(valid_data)}")
         
         # 2. 准备物体坐标 (Object Points)
-        # 圆点阵列坐标系：Z=0
+        # 默认生成逻辑：先变X，再变Y (行优先扫描)
+        # (0,0), (1,0), (2,0)... (0,1), (1,1)...
         objp = np.zeros((rows * cols, 3), np.float32)
         objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
-        objp = objp * spacing  # 转换到真实物理尺寸
+        objp = objp * spacing 
         
-        objpoints = [] # 3d points in real world space
-        imgpoints = [] # 2d points in image plane
+        objpoints = []
+        imgpoints = []
         
-        img_size = valid_data[0]['shape'] # (w, h)
+        img_size = valid_data[0]['shape'] 
         
         for d in valid_data:
             objpoints.append(objp)
             imgpoints.append(d['corners'])
             
-        # 3. OpenCV 标定
         try:
             ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
                 objpoints, imgpoints, img_size, None, None
             )
             
-            # 4. 输出结果
             self.calibration_result = {
                 "rms": ret,
                 "camera_matrix": mtx.tolist(),
@@ -410,7 +403,6 @@ class CalibrationApp:
         self.log(f"畸变系数 (k1, k2, p1, p2, k3):\n{np.array2string(dist.ravel(), precision=5, separator=', ')}")
         self.log("="*40)
         
-        # 生成可直接复制的代码片段
         code = "\n# === Python 参数代码 (可直接复制) ===\n"
         code += "import numpy as np\n\n"
         code += "CAMERA_MATRIX = np.array([\n"
@@ -423,7 +415,6 @@ class CalibrationApp:
 
     def save_results(self):
         if not self.calibration_result: return
-        
         fpath = filedialog.asksaveasfilename(
             defaultextension=".json",
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
@@ -441,11 +432,8 @@ class CalibrationApp:
 if __name__ == "__main__":
     root = tk.Tk()
     try:
-        # 尝试设置高DPI支持 (Windows)
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
-    except:
-        pass
-        
+    except: pass
     app = CalibrationApp(root)
     root.mainloop()
