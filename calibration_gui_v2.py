@@ -172,6 +172,13 @@ class CalibrationApp:
             try:
                 img = cv2.imdecode(np.fromfile(fpath, dtype=np.uint8), -1)
                 if img is None: raise Exception("Decode failed")
+                
+                # Check channel count
+                if len(img.shape) == 2: # Grayscale
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                elif img.shape[2] == 4: # RGBA
+                    img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                    
             except:
                 self.root.after(0, lambda n=fname: self.log(f"无法读取图片: {n}"))
                 continue
