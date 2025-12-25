@@ -33,17 +33,17 @@ class CalibrationGUI:
     def setup_ui(self):
         # --- Top Control Panel ---
         control_frame = tk.Frame(self.root, pady=10)
-        control_frame.pack(fill=tk.X, px=10)
+        control_frame.pack(fill=tk.X, padx=10)
         
         tk.Label(control_frame, text="图片文件夹:").pack(side=tk.LEFT)
         self.path_var = tk.StringVar()
-        tk.Entry(control_frame, textvariable=self.path_var, width=50).pack(side=tk.LEFT, px=5)
+        tk.Entry(control_frame, textvariable=self.path_var, width=50).pack(side=tk.LEFT, padx=5)
         tk.Button(control_frame, text="浏览...", command=self.browse_folder).pack(side=tk.LEFT)
         
         tk.Label(control_frame, text="   ").pack(side=tk.LEFT) # Spacer
         
-        tk.Button(control_frame, text="1. 加载并检测", command=self.start_detection, bg="#dddddd").pack(side=tk.LEFT, px=5)
-        tk.Button(control_frame, text="2. 开始标定", command=self.run_calibration, bg="#aaffaa").pack(side=tk.LEFT, px=5)
+        tk.Button(control_frame, text="1. 加载并检测", command=self.start_detection, bg="#dddddd").pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="2. 开始标定", command=self.run_calibration, bg="#aaffaa").pack(side=tk.LEFT, padx=5)
 
         # --- Main Content Area ---
         content_frame = tk.PanedWindow(self.root, orient=tk.HORIZONTAL)
