@@ -17,14 +17,16 @@ DEFAULT_SPACING = 5.0  # mm
 class CalibrationSystemV3:
     def __init__(self, root):
         self.root = root
-        self.root.title("OpenCV 标定系统 V3.0 - 工业级排查版")
-        self.root.geometry("1400x900")
+        self.root.title("OpenCV 标定系统 V3.1 (含位姿显示)")
+        self.root.geometry("1600x950")
         
         # 核心数据
         self.calib_images = [] # 存储图片数据
         self.camera_matrix = None
         self.dist_coeffs = None
         self.reproj_err = 0.0
+        self.rvecs = []
+        self.tvecs = []
         
         # 图像显示状态
         self.current_img_idx = -1
@@ -156,7 +158,7 @@ class CalibrationSystemV3:
                 if img is None:
                     continue
                 
-                # 2. 转换为 BGR (如果是灰度或RGBA)
+                # 2. 转换为 BGR
                 if len(img.shape) == 2:
                     gray = img.copy()
                     img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
@@ -171,7 +173,6 @@ class CalibrationSystemV3:
                 flags = cv2.CALIB_CB_SYMMETRIC_GRID
                 ret, corners = cv2.findCirclesGrid(gray, (cols, rows), flags=flags)
                 
-                # 4. 如果失败，尝试 Blob 检测器增强
                 if not ret:
                     blob_params = cv2.SimpleBlobDetector_Params()
                     blob_params.minArea = 10
@@ -179,18 +180,17 @@ class CalibrationSystemV3:
                     blob_detector = cv2.SimpleBlobDetector_create(blob_params)
                     ret, corners = cv2.findCirclesGrid(gray, (cols, rows), flags=flags | cv2.CALIB_CB_CLUSTERING, blobDetector=blob_detector)
                 
-                # 5. 存储
                 item = {
                     "path": fpath,
                     "name": fname,
-                    "img": img, # 缓存原图用于显示
-                    "gray_shape": gray.shape[::-1], # (w, h)
+                    "img": img, 
+                    "gray_shape": gray.shape[::-1], 
                     "corners": corners,
-                    "found": ret
+                    "found": ret,
+                    "pose_idx": -1 # 存储对应的 rvec/tvec 索引
                 }
                 self.calib_images.append(item)
                 
-                # 6. 更新 UI
                 tag = "[OK]" if ret else "[--]"
                 if ret: count_ok += 1
                 
@@ -225,6 +225,15 @@ class CalibrationSystemV3:
         idx = sel[0]
         self.current_img_idx = idx
         self.draw_image()
+        
+        # 显示位姿信息
+        data = self.calib_images[idx]
+        if data['found'] and data['pose_idx'] != -1 and self.rvecs:
+            rvec = self.rvecs[data['pose_idx']]
+            tvec = self.tvecs[data['pose_idx']]
+            self.log(f"\n--- 图片: {data['name']} 位姿 ---")
+            self.log(f"平移: [{tvec[0][0]:.2f}, {tvec[1][0]:.2f}, {tvec[2][0]:.2f}] mm")
+            self.log(f"旋转向量: [{rvec[0][0]:.3f}, {rvec[1][0]:.3f}, {rvec[2][0]:.3f}]")
 
     def draw_image(self):
         if self.current_img_idx < 0 or self.current_img_idx >= len(self.calib_images): return
@@ -232,29 +241,39 @@ class CalibrationSystemV3:
         data = self.calib_images[self.current_img_idx]
         img_vis = data['img'].copy()
         
-        # 如果检测成功，绘制角点
+        # 如果检测成功
         if data['found']:
             rows = self.var_rows.get()
             cols = self.var_cols.get()
             cv2.drawChessboardCorners(img_vis, (cols, rows), data['corners'], True)
             
-            # --- 关键调试信息：显示像素距离 ---
-            # 画出第0个点和第1个点的连线，并显示像素距离
+            # 显示像素距离
             p0 = tuple(data['corners'][0][0].astype(int))
             p1 = tuple(data['corners'][1][0].astype(int))
-            
-            cv2.circle(img_vis, p0, 8, (0, 0, 255), -1) # Red for Start
+            cv2.circle(img_vis, p0, 8, (0, 0, 255), -1) 
             cv2.line(img_vis, p0, p1, (0, 255, 255), 2)
-            
             px_dist = np.linalg.norm(data['corners'][0] - data['corners'][1])
-            mm_dist = self.var_spacing.get()
+            cv2.putText(img_vis, f"Px: {px_dist:.1f}", (p0[0]+10, p0[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             
-            info = f"Px Dist: {px_dist:.1f}"
-            cv2.putText(img_vis, info, (p0[0]+10, p0[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-            
-            # 在图上显示分辨率
-            h, w = img_vis.shape[:2]
-            cv2.putText(img_vis, f"Res: {w}x{h}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            # --- 绘制坐标轴 (位姿可视化) ---
+            if self.camera_matrix is not None and data['pose_idx'] != -1:
+                rvec = self.rvecs[data['pose_idx']]
+                tvec = self.tvecs[data['pose_idx']]
+                
+                # 坐标轴长度 (例如 3倍间距)
+                axis_len = self.var_spacing.get() * 3
+                axis_pts = np.float32([[0,0,0], [axis_len,0,0], [0,axis_len,0], [0,0,-axis_len]]).reshape(-1,3)
+                
+                imgpts, _ = cv2.projectPoints(axis_pts, rvec, tvec, self.camera_matrix, self.dist_coeffs)
+                imgpts = imgpts.astype(np.int32)
+                
+                origin = tuple(imgpts[0].ravel())
+                cv2.line(img_vis, origin, tuple(imgpts[1].ravel()), (0, 0, 255), 5) # X - Red
+                cv2.line(img_vis, origin, tuple(imgpts[2].ravel()), (0, 255, 0), 5) # Y - Green
+                cv2.line(img_vis, origin, tuple(imgpts[3].ravel()), (255, 0, 0), 5) # Z - Blue (Away)
+                
+                cv2.putText(img_vis, "X", tuple(imgpts[1].ravel()), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+                cv2.putText(img_vis, "Y", tuple(imgpts[2].ravel()), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
 
         # 缩放转 PIL
         img_rgb = cv2.cvtColor(img_vis, cv2.COLOR_BGR2RGB)
@@ -264,7 +283,6 @@ class CalibrationSystemV3:
         canvas_h = self.canvas.winfo_height()
         if canvas_w < 10: canvas_w=800
         
-        # 计算缩放
         scale_fit = min(canvas_w/w, canvas_h/h)
         final_scale = scale_fit * self.zoom
         
@@ -276,10 +294,7 @@ class CalibrationSystemV3:
             self.tk_image = ImageTk.PhotoImage(Image.fromarray(img_small))
             
             self.canvas.delete("all")
-            # 居中 + 偏移
-            cx = canvas_w // 2 + self.pan_x
-            cy = canvas_h // 2 + self.pan_y
-            self.canvas.create_image(cx, cy, anchor=tk.CENTER, image=self.tk_image)
+            self.canvas.create_image(canvas_w//2 + self.pan_x, canvas_h//2 + self.pan_y, image=self.tk_image, anchor=tk.CENTER)
 
     # 鼠标事件
     def on_zoom(self, event):
@@ -305,8 +320,8 @@ class CalibrationSystemV3:
         cols = self.var_cols.get()
         spacing = self.var_spacing.get()
         
-        valid_data = [d for d in self.calib_images if d['found']]
-        if not valid_data: return
+        valid_indices = [i for i, d in enumerate(self.calib_images) if d['found']]
+        if not valid_indices: return
         
         # 1. 准备物理坐标
         # 规则：Z=0，X和Y按间距分布
@@ -314,14 +329,15 @@ class CalibrationSystemV3:
         objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
         objp = objp * spacing 
         
-        objpoints = [objp] * len(valid_data)
-        imgpoints = [d['corners'] for d in valid_data]
-        img_size = valid_data[0]['gray_shape'] # w, h
+        objpoints = [objp] * len(valid_indices)
+        imgpoints = [self.calib_images[i]['corners'] for i in valid_indices]
+        img_size = self.calib_images[valid_indices[0]]['gray_shape'] # w, h
         
-        self.log(f"正在计算... (图片数: {len(valid_data)})")
+        self.log(f"正在计算... (图片数: {len(valid_indices)})")
         self.root.update()
         
         try:
+            # 标定
             ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
                 objpoints, imgpoints, img_size, None, None
             )
@@ -329,6 +345,12 @@ class CalibrationSystemV3:
             self.camera_matrix = mtx
             self.dist_coeffs = dist
             self.reproj_err = ret
+            self.rvecs = rvecs
+            self.tvecs = tvecs
+            
+            # 将位姿索引存回数据结构
+            for k, idx in enumerate(valid_indices):
+                self.calib_images[idx]['pose_idx'] = k
             
             # 输出报告
             self.log("=" * 40)
@@ -346,6 +368,9 @@ class CalibrationSystemV3:
             self.log("=" * 40)
             
             messagebox.showinfo("成功", f"标定完成！RMS: {ret:.4f}")
+            
+            # 刷新显示（画出坐标轴）
+            self.draw_image()
             
         except Exception as e:
             self.log(f"标定崩溃: {e}")
