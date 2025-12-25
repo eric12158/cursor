@@ -54,15 +54,19 @@ class CalibrationGUI:
         self.spacing_var = tk.DoubleVar(value=CIRCLE_SPACING)
         tk.Entry(control_frame, textvariable=self.spacing_var, width=5).pack(side=tk.LEFT, padx=5)
         
+        tk.Label(control_frame, text="圆点间距(mm):").pack(side=tk.LEFT)
+        self.spacing_var = tk.DoubleVar(value=CIRCLE_SPACING)
+        tk.Entry(control_frame, textvariable=self.spacing_var, width=5).pack(side=tk.LEFT, padx=5)
+
         tk.Button(control_frame, text="1. 加载并检测", command=self.start_detection, bg="#dddddd").pack(side=tk.LEFT, padx=5)
         tk.Button(control_frame, text="2. 开始标定", command=self.run_calibration, bg="#aaffaa").pack(side=tk.LEFT, padx=5)
 
         # --- Main Content Area ---
-        content_frame = tk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        content_frame = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashwidth=4)
         content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Left: Image List
-        left_frame = tk.Frame(content_frame, width=250)
+        left_frame = tk.Frame(content_frame, width=200) # Reduce width slightly
         tk.Label(left_frame, text="图片列表 (点击查看):").pack(anchor=tk.W)
         
         self.listbox = tk.Listbox(left_frame, selectmode=tk.SINGLE)
@@ -71,11 +75,10 @@ class CalibrationGUI:
         
         # Filter checkboxes
         self.show_all_var = tk.BooleanVar(value=True)
-        # tk.Checkbutton(left_frame, text="显示所有", variable=self.show_all_var).pack(anchor=tk.W)
         
-        content_frame.add(left_frame)
+        content_frame.add(left_frame, minsize=150)
         
-        # Center: Image Display
+        # Center: Image Display (Make it bigger/default)
         center_frame = tk.Frame(content_frame, bg="gray")
         self.canvas = tk.Canvas(center_frame, bg="#333333")
         self.canvas.pack(fill=tk.BOTH, expand=True)
@@ -87,14 +90,14 @@ class CalibrationGUI:
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_press)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         
-        content_frame.add(center_frame)
+        content_frame.add(center_frame, minsize=600, stretch="always") # Give more space to center
         
         # Right: Log/Results
-        right_frame = tk.Frame(content_frame, width=300)
+        right_frame = tk.Frame(content_frame, width=250)
         tk.Label(right_frame, text="标定结果 / 日志:").pack(anchor=tk.W)
-        self.log_text = tk.Text(right_frame, wrap=tk.WORD)
+        self.log_text = tk.Text(right_frame, wrap=tk.WORD, width=30)
         self.log_text.pack(fill=tk.BOTH, expand=True)
-        content_frame.add(right_frame)
+        content_frame.add(right_frame, minsize=200)
 
         # Status Bar
         self.status_var = tk.StringVar(value="准备就绪")
