@@ -65,6 +65,16 @@ class CalibrationVerifier:
                 # Verify points are valid floats
                 img_points = img_points.astype(np.float64)
                 
+                # Calculate the center of the QR code
+                qr_center_x = np.mean(img_points[:, 0])
+                qr_center_y = np.mean(img_points[:, 1])
+                
+                print(f"二维码中心坐标 (Pixel): ({qr_center_x:.2f}, {qr_center_y:.2f})")
+                print(f"图像中心坐标 (Pixel): ({self.img_original.shape[1]/2:.2f}, {self.img_original.shape[0]/2:.2f})")
+                
+                # Check if QR code is near the center of the image
+                # In perspective projection, objects at the edge might appear distorted or have different scales
+                
                 # Solve PnP
                 # We want to find the rotation (rvec) and translation (tvec) 
                 # that minimizes reprojection error from obj_points to img_points
