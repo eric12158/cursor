@@ -50,6 +50,10 @@ class CalibrationGUI:
         
         tk.Label(control_frame, text="   ").pack(side=tk.LEFT) # Spacer
         
+        tk.Label(control_frame, text="圆点间距(mm):").pack(side=tk.LEFT)
+        self.spacing_var = tk.DoubleVar(value=CIRCLE_SPACING)
+        tk.Entry(control_frame, textvariable=self.spacing_var, width=5).pack(side=tk.LEFT, padx=5)
+        
         tk.Button(control_frame, text="1. 加载并检测", command=self.start_detection, bg="#dddddd").pack(side=tk.LEFT, padx=5)
         tk.Button(control_frame, text="2. 开始标定", command=self.run_calibration, bg="#aaffaa").pack(side=tk.LEFT, padx=5)
 
@@ -272,13 +276,20 @@ class CalibrationGUI:
             messagebox.showerror("错误", "没有检测到圆点的图片，无法标定！")
             return
             
-        self.log("\n>>> 开始计算标定参数...")
+        try:
+            spacing = self.spacing_var.get()
+            if spacing <= 0: raise ValueError
+        except ValueError:
+            messagebox.showerror("错误", "请输入有效的圆点间距！")
+            return
+
+        self.log(f"\n>>> 开始计算标定参数 (圆点间距: {spacing} mm)...")
         
         # Prepare Object Points
         # (0,0,0), (1,0,0), (2,0,0) ...., (6,6,0)
         objp = np.zeros((PATTERN_ROWS * PATTERN_COLS, 3), np.float32)
         objp[:, :2] = np.mgrid[0:PATTERN_COLS, 0:PATTERN_ROWS].T.reshape(-1, 2)
-        objp = objp * CIRCLE_SPACING # Scale by real spacing (5mm)
+        objp = objp * spacing # Scale by user input spacing
         
         objpoints = [] # 3d point in real world space
         imgpoints = [] # 2d points in image plane.
