@@ -85,8 +85,34 @@ class CalibrationVerifier:
                     # Calculate Pixel Width for debugging
                     pixel_width = np.linalg.norm(img_points[0] - img_points[1])
                     
+                    # Calculate Euler angles
+                    rot_mat, _ = cv2.Rodrigues(rvec)
+                    # Use standard decomposition to get Euler angles (e.g. XYZ)
+                    # This often depends on specific convention, let's use RQ decomposition or manual calculation
+                    # Sy = math.sqrt(rot_mat[0,0] * rot_mat[0,0] +  rot_mat[1,0] * rot_mat[1,0])
+                    # if Sy > 1e-6:
+                    #     x = math.atan2(rot_mat[2,1] , rot_mat[2,2])
+                    #     y = math.atan2(-rot_mat[2,0], Sy)
+                    #     z = math.atan2(rot_mat[1,0], rot_mat[0,0])
+                    # else:
+                    #     x = math.atan2(-rot_mat[1,2], rot_mat[1,1])
+                    #     y = math.atan2(-rot_mat[2,0], Sy)
+                    #     z = 0
+                    
+                    # A simpler way using RQDecomp3x3 which is handy for camera decomposition
+                    # But standard Euler (Yaw Pitch Roll) is often:
+                    # Pitch (X), Yaw (Y), Roll (Z)
+                    
+                    pitch = math.atan2(rot_mat[2,1], rot_mat[2,2])
+                    yaw = math.atan2(-rot_mat[2,0], math.sqrt(rot_mat[2,1]**2 + rot_mat[2,2]**2))
+                    roll = math.atan2(rot_mat[1,0], rot_mat[0,0])
+                    
+                    rx_deg = math.degrees(pitch)
+                    ry_deg = math.degrees(yaw)
+                    rz_deg = math.degrees(roll)
+                    
                     # Draw on display image
-                    self.draw_result(img_points, rvec, tvec, dist_mm)
+                    self.draw_result(img_points, rvec, tvec, dist_mm, (rx_deg, ry_deg, rz_deg))
                     
                     # Print info
                     print(f"\n--- 二维码 #{i+1} ---")
@@ -94,6 +120,7 @@ class CalibrationVerifier:
                     print(f"检测到的像素宽度 (边长): {pixel_width:.1f} pixels")
                     print(f"当前计算距离: {dist_mm:.4f} mm")
                     print(f"相机坐标 (X, Y, Z): ({tvec[0][0]:.2f}, {tvec[1][0]:.2f}, {tvec[2][0]:.2f})")
+                    print(f"旋转角度 (Rx, Ry, Rz): ({rx_deg:.2f}°, {ry_deg:.2f}°, {rz_deg:.2f}°)")
 
         else:
             print("未检测到二维码。请确保图片清晰且二维码完整。")
@@ -103,7 +130,7 @@ class CalibrationVerifier:
             
         cv2.imshow("QR PnP Verification", self.img_display)
 
-    def draw_result(self, img_points, rvec, tvec, dist):
+    def draw_result(self, img_points, rvec, tvec, dist, angles):
         # Draw corners
         # Need to scale points for display
         scaled_pts = (img_points * self.scale_factor).astype(np.int32)
@@ -120,11 +147,7 @@ class CalibrationVerifier:
             [0, 0, 0],
             [axis_length, 0, 0],
             [0, axis_length, 0],
-            [0, 0, -axis_length] # Z axis usually points away from camera, but here we define local obj coord.
-                                 # Standard OpenCV camera: Z forward. 
-                                 # If we want to draw Z pointing OUT of the QR code (normal), 
-                                 # and we defined points as 0,0,0 ... 
-                                 # Let's just draw standard XYZ local axes
+            [0, 0, -axis_length] # Z axis usually points away from camera
         ], dtype=np.float64)
         
         # Project axis points
@@ -134,23 +157,29 @@ class CalibrationVerifier:
         origin = tuple(scaled_axis[0])
         pt_x = tuple(scaled_axis[1])
         pt_y = tuple(scaled_axis[2])
-        pt_z = tuple(scaled_axis[3]) # Note: this might point "into" the paper depending on coord sys
+        pt_z = tuple(scaled_axis[3]) 
         
         # X: Red, Y: Green, Z: Blue
         cv2.line(self.img_display, origin, pt_x, (0, 0, 255), 2) 
         cv2.line(self.img_display, origin, pt_y, (0, 255, 0), 2)
         cv2.line(self.img_display, origin, pt_z, (255, 0, 0), 2)
         
-        # Draw Distance Text
+        # Draw Distance and Angle Text
         center_x = int(np.mean(scaled_pts[:, 0]))
         center_y = int(np.mean(scaled_pts[:, 1]))
         
-        text = f"Dist: {dist:.1f}mm"
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        text_dist = f"Dist: {dist:.1f}mm"
+        text_ang = f"R: {angles[0]:.1f}, {angles[1]:.1f}, {angles[2]:.1f}"
+        
+        (tw, th), _ = cv2.getTextSize(text_dist, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        (tw2, th2), _ = cv2.getTextSize(text_ang, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         
         # Background
-        cv2.rectangle(self.img_display, (center_x - 10, center_y - th - 10), (center_x + tw + 10, center_y + 10), (0,0,0), -1)
-        cv2.putText(self.img_display, text, (center_x, center_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        max_w = max(tw, tw2)
+        cv2.rectangle(self.img_display, (center_x - 10, center_y - th - 10), (center_x + max_w + 10, center_y + 30), (0,0,0), -1)
+        
+        cv2.putText(self.img_display, text_dist, (center_x, center_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(self.img_display, text_ang, (center_x, center_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
     def load_image(self):
         root = tk.Tk()
