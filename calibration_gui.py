@@ -23,6 +23,14 @@ class CalibrationGUI:
         self.images_data = [] # List of dicts: {'path': str, 'found': bool, 'corners': np.array, 'img_shape': tuple}
         self.current_image_idx = -1
         
+        # Zoom & Pan State
+        self.current_cv_img = None
+        self.scale = 1.0
+        self.offset_x = 0
+        self.offset_y = 0
+        self.last_x = 0
+        self.last_y = 0
+        
         # UI Layout
         self.setup_ui()
         
@@ -67,6 +75,14 @@ class CalibrationGUI:
         center_frame = tk.Frame(content_frame, bg="gray")
         self.canvas = tk.Canvas(center_frame, bg="#333333")
         self.canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Bind Mouse Events for Zoom/Pan
+        self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)  # Windows
+        self.canvas.bind("<Button-4>", self.on_mouse_wheel)    # Linux
+        self.canvas.bind("<Button-5>", self.on_mouse_wheel)    # Linux
+        self.canvas.bind("<ButtonPress-1>", self.on_mouse_press)
+        self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
+        
         content_frame.add(center_frame)
         
         # Right: Log/Results
@@ -165,32 +181,90 @@ class CalibrationGUI:
         if data['found']:
             cv2.drawChessboardCorners(img, (PATTERN_COLS, PATTERN_ROWS), data['corners'], data['found'])
             
-        # Resize for display
-        self.display_image(img)
-
-    def display_image(self, cv_img):
-        # Convert BGR to RGB
-        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        h, w = cv_img.shape[:2]
+        # Reset Zoom/Pan
+        self.scale = 1.0
+        self.offset_x = 0
+        self.offset_y = 0
+        self.current_cv_img = img
         
-        # Calculate scale to fit canvas
+        # Initial display
+        self.display_image()
+
+    def display_image(self, cv_img=None):
+        if cv_img is not None:
+            # Should not happen with new logic, but kept for compatibility or direct calls
+            self.current_cv_img = cv_img
+            
+        if self.current_cv_img is None:
+            return
+
+        # Convert BGR to RGB
+        img_rgb = cv2.cvtColor(self.current_cv_img, cv2.COLOR_BGR2RGB)
+        h, w = img_rgb.shape[:2]
+        
+        # Calculate scale to fit canvas initially, then apply zoom
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
         
         if canvas_w < 10 or canvas_h < 10: return
         
-        scale = min(canvas_w/w, canvas_h/h)
-        new_w, new_h = int(w*scale), int(h*scale)
+        # Base scale to fit
+        base_scale = min(canvas_w/w, canvas_h/h)
         
-        img_resized = cv2.resize(cv_img, (new_w, new_h))
+        # Final display size
+        final_scale = base_scale * self.scale
+        new_w, new_h = int(w * final_scale), int(h * final_scale)
+        
+        # Resize
+        # Use simple interpolation for speed during interaction?
+        img_resized = cv2.resize(img_rgb, (new_w, new_h))
         self.pil_img = Image.fromarray(img_resized)
         self.tk_img = ImageTk.PhotoImage(self.pil_img)
         
         self.canvas.delete("all")
-        # Center image
-        x_offset = (canvas_w - new_w) // 2
-        y_offset = (canvas_h - new_h) // 2
-        self.canvas.create_image(x_offset, y_offset, anchor=tk.NW, image=self.tk_img)
+        
+        # Calculate centered position + offset
+        center_x = canvas_w // 2 + self.offset_x
+        center_y = canvas_h // 2 + self.offset_y
+        
+        # Anchor is center to make zooming easier around center? 
+        # Or keep NW and calc top-left?
+        # Let's use CENTER anchor for the image item.
+        self.canvas.create_image(center_x, center_y, anchor=tk.CENTER, image=self.tk_img)
+
+    def on_mouse_wheel(self, event):
+        if self.current_cv_img is None: return
+        
+        # Determine scroll direction (Windows vs Linux)
+        if event.num == 5 or event.delta < 0:
+            factor = 0.9
+        else:
+            factor = 1.1
+            
+        self.scale *= factor
+        # Limit zoom
+        if self.scale < 0.1: self.scale = 0.1
+        if self.scale > 50.0: self.scale = 50.0
+        
+        self.display_image()
+
+    def on_mouse_press(self, event):
+        self.last_x = event.x
+        self.last_y = event.y
+
+    def on_mouse_drag(self, event):
+        if self.current_cv_img is None: return
+        
+        dx = event.x - self.last_x
+        dy = event.y - self.last_y
+        
+        self.offset_x += dx
+        self.offset_y += dy
+        
+        self.last_x = event.x
+        self.last_y = event.y
+        
+        self.display_image()
 
     def run_calibration(self):
         valid_images = [d for d in self.images_data if d['found']]
