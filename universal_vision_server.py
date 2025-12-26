@@ -19,9 +19,9 @@ DEFAULT_CONFIG = {
         "buffer_size": 1024
     },
     "camera": {
-        "id": 0,
-        "width": 1280,
-        "height": 960,
+        "id": 0,           # 相机索引: 0, 1, 2...
+        "width": 1280,     # 分辨率宽
+        "height": 960,     # 分辨率高
         "fx": 2000.0, "fy": 2000.0, "cx": 640.0, "cy": 480.0,
         "dist": [0,0,0,0,0]
     },
@@ -57,6 +57,7 @@ class UniversalVisionServer:
         self.is_running = False
         self.cap = None
         self.lock = threading.Lock()
+        self.current_frame = None
         
         # 手眼标定数据缓存
         self.calib_data_list = []
@@ -169,11 +170,11 @@ class UniversalVisionServer:
     def setup_config_ui(self, parent):
         # 使用简单的 Grid 布局配置参数
         row = 0
-        def add_entry(p, label, key_group, key_item):
+        def add_entry(p, label, key_group, key_item, width=30):
             nonlocal row
             tk.Label(p, text=label).grid(row=row, column=0, sticky="e", padx=5, pady=2)
             var = tk.StringVar(value=str(self.cfg[key_group][key_item]))
-            entry = tk.Entry(p, textvariable=var, width=30)
+            entry = tk.Entry(p, textvariable=var, width=width)
             entry.grid(row=row, column=1, sticky="w", padx=5, pady=2)
             # 动态绑定保存
             setattr(self, f"var_{key_group}_{key_item}", var)
@@ -182,25 +183,38 @@ class UniversalVisionServer:
         frame = tk.Frame(parent)
         frame.pack(padx=20, pady=20)
         
-        tk.Label(frame, text="--- 网络配置 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2); row+=1
+        # --- 相机配置 (新增) ---
+        tk.Label(frame, text="--- 相机硬件连接 ---", font=("bold", 10), fg="blue").grid(row=row, column=0, columnspan=2, pady=(10,5)); row+=1
+        add_entry(frame, "相机索引 ID (0/1/2):", "camera", "id")
+        add_entry(frame, "分辨率 宽:", "camera", "width")
+        add_entry(frame, "分辨率 高:", "camera", "height")
+        
+        # 测试按钮
+        tk.Button(frame, text="测试打开相机", command=self.test_camera, bg="#e0e0e0").grid(row=row, column=1, sticky="w", pady=5); row+=1
+        
+        # --- 网络配置 ---
+        tk.Label(frame, text="--- 网络配置 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2, pady=(10,5)); row+=1
         add_entry(frame, "监听 IP:", "network", "ip")
         add_entry(frame, "监听端口:", "network", "port")
         
-        tk.Label(frame, text="--- 机械臂指令 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2); row+=1
+        # --- 机械臂指令 ---
+        tk.Label(frame, text="--- 机械臂指令 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2, pady=(10,5)); row+=1
         add_entry(frame, "触发拍照指令:", "commands", "trigger")
         add_entry(frame, "失败返回指令:", "commands", "error")
         add_entry(frame, "成功返回前缀:", "commands", "success_prefix")
         
-        tk.Label(frame, text="--- 存储配置 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2); row+=1
+        # --- 存储配置 ---
+        tk.Label(frame, text="--- 存储配置 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2, pady=(10,5)); row+=1
         add_entry(frame, "图片保存路径:", "paths", "save_dir")
         
-        tk.Label(frame, text="--- 相机内参 (Halcon) ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2); row+=1
+        # --- 内参配置 ---
+        tk.Label(frame, text="--- 相机内参 (Halcon) ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2, pady=(10,5)); row+=1
         add_entry(frame, "Fx:", "camera", "fx")
         add_entry(frame, "Fy:", "camera", "fy")
         add_entry(frame, "Cx:", "camera", "cx")
         add_entry(frame, "Cy:", "camera", "cy")
 
-        tk.Button(frame, text="保存配置", command=self.save_config, bg="#2196f3", fg="white", height=2).grid(row=row, column=0, columnspan=2, pady=20, sticky="ew")
+        tk.Button(frame, text="保存所有配置", command=self.save_config, bg="#2196f3", fg="white", height=2).grid(row=row, column=0, columnspan=2, pady=20, sticky="ew")
 
     def update_cfg_from_ui(self):
         # 这是一个简单的反射更新，实际项目可以更严谨
@@ -216,6 +230,31 @@ class UniversalVisionServer:
                     except: pass
                     self.cfg[key_group][key_item] = val
 
+    def test_camera(self):
+        self.update_cfg_from_ui() # 先获取当前输入
+        try:
+            cam_id = int(self.cfg["camera"]["id"])
+            w = int(self.cfg["camera"]["width"])
+            h = int(self.cfg["camera"]["height"])
+            
+            cap = cv2.VideoCapture(cam_id)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            
+            if not cap.isOpened():
+                messagebox.showerror("失败", f"无法打开相机 ID: {cam_id}")
+                return
+            
+            ret, frame = cap.read()
+            cap.release()
+            
+            if ret:
+                messagebox.showinfo("成功", f"相机连接正常！\n获取分辨率: {frame.shape[1]}x{frame.shape[0]}")
+            else:
+                messagebox.showerror("失败", "相机已打开但无法读取画面")
+        except Exception as e:
+            messagebox.showerror("错误", str(e))
+
     # -------------------------------------------------------------------------
     # 核心逻辑
     # -------------------------------------------------------------------------
@@ -230,11 +269,15 @@ class UniversalVisionServer:
                 self.server_socket.listen(1)
                 self.server_socket.settimeout(1.0) # 非阻塞
                 
-                # 打开相机
-                self.cap = cv2.VideoCapture(int(self.cfg["camera"]["id"]))
+                # 打开相机 (在这里连接)
+                cam_id = int(self.cfg["camera"]["id"])
+                self.cap = cv2.VideoCapture(cam_id)
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg["camera"]["width"])
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg["camera"]["height"])
                 
+                if not self.cap.isOpened():
+                    raise Exception(f"无法打开相机 ID {cam_id}")
+
                 self.is_running = True
                 self.btn_start.config(text="停止服务", bg="#f44336")
                 self.lbl_status.config(text=f"监听中: {ip}:{port}", fg="green")
@@ -246,6 +289,7 @@ class UniversalVisionServer:
                 
             except Exception as e:
                 messagebox.showerror("错误", f"启动失败: {e}")
+                if self.server_socket: self.server_socket.close()
         else:
             # 停止
             self.is_running = False
@@ -284,7 +328,8 @@ class UniversalVisionServer:
                             client.send(response.encode('utf-8'))
                             self.log(f"回复: {response}")
                         else:
-                            client.send(b"UNKNOWN")
+                            # 简单的握手或心跳
+                            pass
                             
                     except Exception as e:
                         self.log(f"通讯异常: {e}")
@@ -322,7 +367,7 @@ class UniversalVisionServer:
 
     def handle_trigger(self):
         """核心处理逻辑：拍照 -> 识别 -> 存图 -> 返回"""
-        if not hasattr(self, 'current_frame'): return self.cfg["commands"]["error"]
+        if self.current_frame is None: return self.cfg["commands"]["error"]
         
         # 1. 抓取当前帧
         frame = self.current_frame.copy()
