@@ -316,27 +316,48 @@ class CalibrationSystemV3:
 
     # --- 标定计算 ---
     def run_calibration(self):
-        rows = self.var_rows.get()
-        cols = self.var_cols.get()
-        spacing = self.var_spacing.get()
+        try:
+            rows = self.var_rows.get()
+            cols = self.var_cols.get()
+            spacing = self.var_spacing.get()
+        except:
+            messagebox.showerror("Error", "参数读取失败")
+            return
         
-        # 强制刷新 objp：确保每次点击"执行标定"时，都使用最新的 spacing
-        # 之前的代码可能复用了旧的 objp
+        valid_data = [d for d in self.calib_images if d['found']]
+        if not valid_data: return
+        
+        # --- 强制深拷贝与重新生成 ---
+        # 1. 物理坐标 (World Points)
+        # 必须确保 dtype=float32
         objp = np.zeros((rows * cols, 3), np.float32)
         objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
-        objp = objp * spacing 
+        objp = objp * float(spacing) # 强制乘法
         
-        valid_indices = [i for i, d in enumerate(self.calib_images) if d['found']]
-        if not valid_indices: return
+        # 打印物理坐标的第一个点和最后一个点，确保 spacing 生效了
+        self.log(f"[Debug] 物理间距: {spacing}")
+        self.log(f"[Debug] 第2个点坐标: {objp[1]}")
+        self.log(f"[Debug] 最后点坐标: {objp[-1]}")
         
-        objpoints = [objp] * len(valid_indices)
-        imgpoints = [self.calib_images[i]['corners'] for i in valid_indices]
-        img_size = self.calib_images[valid_indices[0]]['gray_shape'] # w, h
+        # 2. 构建列表
+        # 这里的 copy() 至关重要，防止引用污染
+        objpoints = []
+        imgpoints = []
         
-        self.log(f"正在计算... (图片数: {len(valid_indices)}, 间距: {spacing}mm)")
+        for d in valid_data:
+            objpoints.append(objp.copy())
+            imgpoints.append(d['corners'].copy())
+            
+        img_size = valid_data[0]['gray_shape'] # w, h
+        
+        self.log(f"正在计算... (图片数: {len(valid_data)}, 间距: {spacing}mm)")
         self.root.update()
         
         try:
+            # 清空旧结果
+            self.camera_matrix = None
+            self.dist_coeffs = None
+            
             # 标定
             ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
                 objpoints, imgpoints, img_size, None, None
@@ -349,31 +370,30 @@ class CalibrationSystemV3:
             self.tvecs = tvecs
             
             # 将位姿索引存回数据结构
-            for k, idx in enumerate(valid_indices):
+            for k, idx in enumerate([i for i, d in enumerate(self.calib_images) if d['found']]):
                 self.calib_images[idx]['pose_idx'] = k
             
             # 输出报告
             self.log("=" * 40)
             self.log(f"标定成功！")
-            self.log(f"RMS 误差: {ret:.4f} (越小越好)")
-            self.log(f"图像分辨率: {img_size}")
+            self.log(f"RMS 误差: {ret:.4f}")
+            self.log(f"输入间距: {spacing} mm")
             self.log("-" * 20)
             self.log(f"内参矩阵 (Camera Matrix):")
             self.log(f"Fx: {mtx[0,0]:.2f}")
             self.log(f"Fy: {mtx[1,1]:.2f}")
             self.log(f"Cx: {mtx[0,2]:.2f}")
             self.log(f"Cy: {mtx[1,2]:.2f}")
-            self.log("-" * 20)
-            self.log(f"畸变系数: {np.ravel(dist)}")
             self.log("=" * 40)
             
-            messagebox.showinfo("成功", f"标定完成！RMS: {ret:.4f}")
+            messagebox.showinfo("成功", f"标定完成！RMS: {ret:.4f}\nFx: {mtx[0,0]:.1f}")
             
-            # 刷新显示（画出坐标轴）
             self.draw_image()
             
         except Exception as e:
             self.log(f"标定崩溃: {e}")
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("Error", str(e))
 
     def save_result(self):
