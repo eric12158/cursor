@@ -14,18 +14,14 @@ from scipy.spatial.transform import Rotation as R
 
 # --- 默认配置 ---
 DEFAULT_CONFIG = {
-    "network": {
-        "ip": "0.0.0.0",
-        "port": 8000,
-        "buffer_size": 1024
+    "robot_net": {
+        "bind_ip": "0.0.0.0",  # 机械臂连接的本机IP
+        "port": 8000
     },
     "camera": {
-        "mode": "usb",     # usb 或 rtsp
-        "id": 0,           # USB 索引
-        "rtsp_url": "",    # RTSP 地址模板
-        "ip": "",          # 目标 IP
-        "user": "admin",
-        "pwd": "",
+        "mode": "ip",      # ip 或 index
+        "target_ip": "",   # 相机IP
+        "index": 0,        # 索引
         "width": 1280,
         "height": 960,
         "fx": 2000.0, "fy": 2000.0, "cx": 640.0, "cy": 480.0,
@@ -53,35 +49,19 @@ class GigEScanner:
     def scan(self, timeout=1.0):
         devices = []
         try:
-            # 创建 UDP 套接字
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.settimeout(timeout)
-            
-            # GVCP Discovery Packet (标准 GigE 发现包)
-            # Key(0x42) | Flag(0x11) | Cmd(0x0002 - DISCOVERY) | Length(0x0000) | ReqID(0x0001)
+            # GigE Discovery Packet
             msg = struct.pack('>BBHHH', 0x42, 0x11, 0x0002, 0x0000, 0x0001)
-            
-            # 广播到标准 GigE 端口 3956
             sock.sendto(msg, ('255.255.255.255', 3956))
             
             start = time.time()
             while time.time() - start < timeout:
                 try:
                     data, addr = sock.recvfrom(1024)
-                    if len(data) > 0:
-                        # 解析简单的响应
-                        # 工业相机的响应通常包含厂商信息、序列号、IP等
-                        # 这里我们主要提取 IP (addr[0])
-                        # 尝试解析 Model Name (通常在偏移量较大的位置，具体取决于厂商实现，这里简化处理)
-                        
-                        # 简单的去重
-                        if addr[0] not in [d['ip'] for d in devices]:
-                            devices.append({
-                                'ip': addr[0],
-                                'port': addr[1],
-                                'raw_len': len(data)
-                            })
+                    if len(data) > 0 and addr[0] not in [d['ip'] for d in devices]:
+                        devices.append({'ip': addr[0]})
                 except socket.timeout:
                     break
             sock.close()
@@ -92,7 +72,7 @@ class GigEScanner:
 class UniversalVisionServer:
     def __init__(self, root):
         self.root = root
-        self.root.title("通用视觉服务器系统 (Universal Vision Server) - 工业版")
+        self.root.title("通用视觉服务器系统 (Universal Vision Server) - 工业修正版")
         self.root.geometry("1400x900")
         
         self.config_file = "vision_config.json"
@@ -118,7 +98,11 @@ class UniversalVisionServer:
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f:
-                    return json.load(f)
+                    # 兼容旧配置
+                    data = json.load(f)
+                    if "network" in data and "robot_net" not in data:
+                        data["robot_net"] = {"bind_ip": data["network"]["ip"], "port": data["network"]["port"]}
+                    return data
             except: pass
         return DEFAULT_CONFIG.copy()
 
@@ -149,7 +133,7 @@ class UniversalVisionServer:
         left.pack_propagate(False)
         paned.add(left, minsize=400)
         
-        s_frame = tk.LabelFrame(left, text="服务器控制", font=("bold", 10))
+        s_frame = tk.LabelFrame(left, text="服务器控制 (与机械臂)", font=("bold", 10))
         s_frame.pack(fill=tk.X, padx=5, pady=5)
         self.btn_start = tk.Button(s_frame, text="启动服务", command=self.toggle_server, bg="#4caf50", fg="white", height=2)
         self.btn_start.pack(fill=tk.X, padx=5, pady=5)
@@ -191,158 +175,183 @@ class UniversalVisionServer:
         self.txt_calib_res.pack(fill=tk.X, padx=5, pady=5)
 
     def setup_config_ui(self, parent):
+        # 使用 PanedWindow 分割左右两块 IP 设置
+        paned = tk.PanedWindow(parent, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # === 左侧：机械臂通讯设置 ===
+        f_left = tk.LabelFrame(paned, text="【机械臂通讯设置】 (作为服务端)", font=("bold", 12), fg="blue")
+        paned.add(f_left, minsize=400)
+        
         row = 0
-        def add_entry(p, label, key_group, key_item, width=30):
+        def add_entry(p, label, key_group, key_item, width=25):
             nonlocal row
-            tk.Label(p, text=label).grid(row=row, column=0, sticky="e", padx=5, pady=2)
+            tk.Label(p, text=label).grid(row=row, column=0, sticky="e", padx=5, pady=5)
             var = tk.StringVar(value=str(self.cfg[key_group].get(key_item, "")))
             entry = tk.Entry(p, textvariable=var, width=width)
-            entry.grid(row=row, column=1, sticky="w", padx=5, pady=2)
+            entry.grid(row=row, column=1, sticky="w", padx=5, pady=5)
             setattr(self, f"var_{key_group}_{key_item}", var)
             row += 1
 
-        frame = tk.Frame(parent)
-        frame.pack(padx=20, pady=20)
+        add_entry(f_left, "本机监听 IP:", "robot_net", "bind_ip")
+        tk.Label(f_left, text="(0.0.0.0 代表监听所有网卡)", fg="gray").grid(row=row, column=1, sticky="w"); row+=1
+        add_entry(f_left, "监听端口:", "robot_net", "port")
         
-        # --- 相机配置 ---
-        tk.Label(frame, text="--- 相机连接 ---", font=("bold", 10), fg="blue").grid(row=row, column=0, columnspan=2, pady=(10,5)); row+=1
+        tk.Label(f_left, text="--- 指令协议 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2, pady=10); row+=1
+        add_entry(f_left, "触发拍照:", "commands", "trigger")
+        add_entry(f_left, "失败返回:", "commands", "error")
+        add_entry(f_left, "成功前缀:", "commands", "success_prefix")
         
-        # 模式选择
-        tk.Label(frame, text="连接方式:").grid(row=row, column=0, sticky="e")
-        self.var_camera_mode = tk.StringVar(value=self.cfg["camera"].get("mode", "usb"))
-        mode_frame = tk.Frame(frame)
-        mode_frame.grid(row=row, column=1, sticky="w")
-        tk.Radiobutton(mode_frame, text="USB/虚拟映射(Index)", variable=self.var_camera_mode, value="usb").pack(side=tk.LEFT)
-        tk.Radiobutton(mode_frame, text="网络/RTSP(IP)", variable=self.var_camera_mode, value="rtsp").pack(side=tk.LEFT)
-        row += 1
-        
-        add_entry(frame, "USB 索引 ID:", "camera", "id")
-        
-        # 扫描功能
-        tk.Label(frame, text="IP 扫描:").grid(row=row, column=0, sticky="e")
-        scan_frame = tk.Frame(frame)
-        scan_frame.grid(row=row, column=1, sticky="w")
-        tk.Button(scan_frame, text="扫描局域网 GigE 相机", command=self.scan_ip, bg="#81d4fa").pack(side=tk.LEFT)
-        self.lbl_scan_res = tk.Label(scan_frame, text="未扫描", fg="gray")
-        self.lbl_scan_res.pack(side=tk.LEFT, padx=5)
-        row += 1
-        
-        add_entry(frame, "目标 IP:", "camera", "ip")
-        add_entry(frame, "RTSP 账号:", "camera", "user")
-        add_entry(frame, "RTSP 密码:", "camera", "pwd")
-        
-        tk.Button(frame, text="测试连接", command=self.test_camera, bg="#e0e0e0").grid(row=row, column=1, sticky="w", pady=5); row+=1
+        tk.Label(f_left, text="--- 存储 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2, pady=10); row+=1
+        add_entry(f_left, "保存路径:", "paths", "save_dir")
 
-        # --- 其他配置 ---
-        tk.Label(frame, text="--- 网络/存储/内参 ---", font=("bold", 10)).grid(row=row, column=0, columnspan=2, pady=(10,5)); row+=1
-        add_entry(frame, "监听端口:", "network", "port")
-        add_entry(frame, "图片保存路径:", "paths", "save_dir")
-        add_entry(frame, "触发指令:", "commands", "trigger")
-        add_entry(frame, "内参 Fx:", "camera", "fx", width=10)
+        # === 右侧：相机连接设置 ===
+        f_right = tk.LabelFrame(paned, text="【海康相机连接设置】", font=("bold", 12), fg="green")
+        paned.add(f_right, minsize=400)
         
-        tk.Button(frame, text="保存所有配置", command=self.save_config, bg="#2196f3", fg="white", height=2).grid(row=row, column=0, columnspan=2, pady=20, sticky="ew")
+        # 重置 row 给右侧用
+        r_row = 0
+        def add_cam_entry(label, key_item):
+            nonlocal r_row
+            tk.Label(f_right, text=label).grid(row=r_row, column=0, sticky="e", padx=5, pady=5)
+            var = tk.StringVar(value=str(self.cfg["camera"].get(key_item, "")))
+            entry = tk.Entry(f_right, textvariable=var, width=25)
+            entry.grid(row=r_row, column=1, sticky="w", padx=5, pady=5)
+            setattr(self, f"var_camera_{key_item}", var)
+            r_row += 1
+
+        # 模式选择
+        tk.Label(f_right, text="连接模式:").grid(row=r_row, column=0, sticky="e", padx=5, pady=5)
+        self.var_camera_mode = tk.StringVar(value=self.cfg["camera"].get("mode", "ip"))
+        mf = tk.Frame(f_right)
+        mf.grid(row=r_row, column=1, sticky="w")
+        tk.Radiobutton(mf, text="使用 IP 直连 (无密/RTSP)", variable=self.var_camera_mode, value="ip").pack(side=tk.LEFT)
+        tk.Radiobutton(mf, text="使用 MVS 索引 (Index)", variable=self.var_camera_mode, value="index").pack(side=tk.LEFT)
+        r_row += 1
+
+        # IP 区域
+        tk.Label(f_right, text="--- 选项 A: IP 连接 ---", fg="gray").grid(row=r_row, column=0, columnspan=2, pady=5); r_row+=1
+        add_cam_entry("相机 IP:", "target_ip")
+        
+        scan_f = tk.Frame(f_right)
+        scan_f.grid(row=r_row, column=1, sticky="w")
+        tk.Button(scan_f, text="扫描局域网 IP", command=self.scan_ip, bg="#b3e5fc").pack(side=tk.LEFT)
+        self.lbl_scan_res = tk.Label(scan_f, text="", fg="blue")
+        self.lbl_scan_res.pack(side=tk.LEFT, padx=5)
+        r_row += 1
+
+        # Index 区域
+        tk.Label(f_right, text="--- 选项 B: 索引连接 ---", fg="gray").grid(row=r_row, column=0, columnspan=2, pady=5); r_row+=1
+        add_cam_entry("相机索引:", "index")
+        tk.Label(f_right, text="(需先用MVS软件映射)", fg="gray", font=("Arial", 8)).grid(row=r_row, column=1, sticky="w"); r_row+=1
+        
+        # 内参
+        tk.Label(f_right, text="--- 内参 (Halcon) ---", fg="gray").grid(row=r_row, column=0, columnspan=2, pady=5); r_row+=1
+        add_cam_entry("Fx:", "fx")
+        add_cam_entry("Fy:", "fy")
+        add_cam_entry("Cx:", "cx")
+        add_cam_entry("Cy:", "cy")
+
+        # 测试按钮
+        tk.Button(f_right, text="测试连接相机", command=self.test_camera, bg="#e0e0e0").grid(row=r_row, column=1, sticky="w", pady=10); r_row+=1
+
+        # 底部保存
+        tk.Button(parent, text="=== 保存全部配置 ===", command=self.save_config, bg="#2196f3", fg="white", height=2, font=("bold", 12)).pack(fill=tk.X, padx=20, pady=10)
 
     def update_cfg_from_ui(self):
-        # 简化版更新逻辑
+        # 机械臂配置
+        self.cfg["robot_net"]["bind_ip"] = self.var_robot_net_bind_ip.get()
+        self.cfg["robot_net"]["port"] = int(self.var_robot_net_port.get())
+        
+        # 路径与指令
+        self.cfg["paths"]["save_dir"] = self.var_paths_save_dir.get()
+        self.cfg["commands"]["trigger"] = self.var_commands_trigger.get()
+        self.cfg["commands"]["error"] = self.var_commands_error.get()
+        self.cfg["commands"]["success_prefix"] = self.var_commands_success_prefix.get()
+        
+        # 相机配置
         self.cfg["camera"]["mode"] = self.var_camera_mode.get()
-        # 更新其他所有绑定的 var_...
-        for key_group in self.cfg:
-            for key_item in self.cfg[key_group]:
-                var_name = f"var_{key_group}_{key_item}"
-                if hasattr(self, var_name):
-                    val = getattr(self, var_name).get()
-                    try:
-                        if isinstance(self.cfg[key_group][key_item], int): val = int(val)
-                        elif isinstance(self.cfg[key_group][key_item], float): val = float(val)
-                    except: pass
-                    self.cfg[key_group][key_item] = val
+        self.cfg["camera"]["target_ip"] = self.var_camera_target_ip.get()
+        try: self.cfg["camera"]["index"] = int(self.var_camera_index.get())
+        except: self.cfg["camera"]["index"] = 0
+        
+        # 内参
+        for k in ["fx", "fy", "cx", "cy"]:
+            try: self.cfg["camera"][k] = float(getattr(self, f"var_camera_{k}").get())
+            except: pass
 
     def scan_ip(self):
-        self.lbl_scan_res.config(text="扫描中...", fg="orange")
+        self.lbl_scan_res.config(text="扫描中...")
         self.root.update()
         devices = self.scanner.scan()
         if devices:
-            ip_list = [d['ip'] for d in devices]
-            res_text = f"发现: {', '.join(ip_list)}"
-            self.lbl_scan_res.config(text=res_text, fg="green")
-            # 自动填入第一个
-            self.var_camera_ip.set(devices[0]['ip'])
-            messagebox.showinfo("扫描结果", f"发现 {len(devices)} 个设备:\n{ip_list}\n已自动填入第一个 IP")
+            ip = devices[0]['ip']
+            self.var_camera_target_ip.set(ip)
+            self.lbl_scan_res.config(text=f"已发现: {ip}")
+            messagebox.showinfo("成功", f"扫描到设备 IP: {ip}\n已自动填入。")
         else:
-            self.lbl_scan_res.config(text="未发现 GigE 设备", fg="red")
-            messagebox.showwarning("提示", "未通过 UDP 广播发现设备。\n1. 请检查防火墙是否允许 UDP 3956。\n2. 确保相机和电脑在同一网段。\n3. 若无法发现，请手动输入 IP。")
+            self.lbl_scan_res.config(text="未发现")
+            messagebox.showwarning("失败", "未扫描到 GigE 设备。\n请确认相机已上电且在同一网段。")
 
     def get_video_source(self):
-        """根据配置生成 OpenCV 可以接受的 source 参数"""
-        mode = self.var_camera_mode.get() # 从 UI 实时获取
-        if mode == "usb":
-            return int(self.cfg["camera"]["id"])
+        mode = self.var_camera_mode.get()
+        if mode == "index":
+            try: return int(self.cfg["camera"]["index"])
+            except: return 0
         else:
-            # 构建 RTSP 链接
-            # 海康常见格式: rtsp://user:pwd@ip:554/Streaming/Channels/101
-            # 或者是 OpenRTSP, 或者其他 HTTP 流
-            # 这里提供一个通用模板构建
-            ip = self.cfg["camera"]["ip"]
-            user = self.cfg["camera"]["user"]
-            pwd = self.cfg["camera"]["pwd"]
+            ip = self.cfg["camera"]["target_ip"]
             if not ip: return None
-            
-            # 如果 IP 字段里直接填了完整的 rtsp://... 则直接用
-            if ip.startswith("rtsp://") or ip.startswith("http://"):
-                return ip
-            
-            # 否则尝试构建海康标准格式
-            if user and pwd:
-                return f"rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/101"
-            else:
-                return f"rtsp://{ip}:554/Streaming/Channels/101"
+            # 海康/大华 通用无密 RTSP 或 IP 直接尝试
+            # 优先尝试标准 RTSP 端口
+            return f"rtsp://{ip}:554/Streaming/Channels/101"
 
     def test_camera(self):
         self.update_cfg_from_ui()
         src = self.get_video_source()
-        if src is None:
-            messagebox.showerror("错误", "无效的相机配置")
-            return
-            
         try:
-            messagebox.showinfo("提示", f"正在尝试连接:\n{src}\n(可能需要几秒钟)")
-            cap = cv2.VideoCapture(src)
+            messagebox.showinfo("提示", f"正在尝试连接: {src}")
+            # 针对 IP 连接，强制使用 FFMPEG 后端通常更稳
+            if isinstance(src, str):
+                cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+            else:
+                cap = cv2.VideoCapture(src)
+                
             if not cap.isOpened():
                 raise Exception("无法打开视频流")
             ret, frame = cap.read()
             cap.release()
             
             if ret:
-                messagebox.showinfo("成功", f"连接成功!\n分辨率: {frame.shape[1]}x{frame.shape[0]}")
+                messagebox.showinfo("成功", f"画面读取正常！\n分辨率: {frame.shape[1]}x{frame.shape[0]}")
             else:
-                raise Exception("连接建立但无图像数据")
+                raise Exception("无画面数据")
         except Exception as e:
-            messagebox.showerror("连接失败", f"错误信息:\n{e}\n\n建议:\n1. 检查 IP/账号密码\n2. 若是工业相机，建议使用官方软件映射为 USB 设备模式(Index)\n3. 检查 RTSP 功能是否开启")
+            messagebox.showerror("连接失败", f"错误: {e}\n\n排查建议:\n1. IP 是否正确 (ping一下)\n2. 是否被其他软件(MVS)占用\n3. 尝试切换连接模式")
 
     # -------------------------------------------------------------------------
-    # 核心逻辑
+    # 核心逻辑 (保持不变)
     # -------------------------------------------------------------------------
     def toggle_server(self):
         if not self.is_running:
             try:
-                ip = self.cfg["network"]["ip"]
-                port = int(self.cfg["network"]["port"])
+                # 绑定机械臂监听
+                ip = self.cfg["robot_net"]["bind_ip"]
+                port = int(self.cfg["robot_net"]["port"])
                 self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.server_socket.bind((ip, port))
                 self.server_socket.listen(1)
                 self.server_socket.settimeout(1.0)
                 
-                # 打开相机
+                # 连接相机
                 self.update_cfg_from_ui()
                 src = self.get_video_source()
-                self.cap = cv2.VideoCapture(src)
-                
-                # 针对网络流，设置缓冲区大小可能有助于减少延迟
                 if isinstance(src, str):
-                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
+                    self.cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+                else:
+                    self.cap = cv2.VideoCapture(src)
+                
                 if not self.cap.isOpened():
-                    raise Exception(f"无法连接相机: {src}")
+                    raise Exception(f"无法打开相机源: {src}")
 
                 self.is_running = True
                 self.btn_start.config(text="停止服务", bg="#f44336")
@@ -377,29 +386,23 @@ class UniversalVisionServer:
                 
                 while self.is_running:
                     try:
-                        data = client.recv(self.cfg["network"]["buffer_size"])
+                        data = client.recv(1024)
                         if not data: break
-                        
                         msg = data.decode('utf-8').strip()
-                        self.log(f"收到指令: {msg}")
+                        self.log(f"指令: {msg}")
                         
-                        trigger_cmd = self.cfg["commands"]["trigger"]
-                        
-                        if msg == trigger_cmd:
+                        if msg == self.cfg["commands"]["trigger"]:
                             response = self.handle_trigger()
                             client.send(response.encode('utf-8'))
                             self.log(f"回复: {response}")
                         else:
                             pass
-                            
                     except Exception as e:
                         self.log(f"通讯异常: {e}")
                         break
-                
                 self.client_socket = None
                 self.root.after(0, lambda: self.lbl_client.config(text="无连接", fg="gray"))
-                self.log("机械臂断开连接")
-                
+                self.log("机械臂断开")
             except Exception as e:
                 if self.is_running: self.log(f"Server Error: {e}")
 
@@ -411,9 +414,6 @@ class UniversalVisionServer:
                     self.current_frame = frame
                     if int(time.time() * 10) % 2 == 0:
                         self.root.after(0, self.update_display, frame)
-                else:
-                    # 断线重连尝试
-                    pass 
             time.sleep(0.01)
 
     def update_display(self, img):
@@ -430,7 +430,6 @@ class UniversalVisionServer:
     def handle_trigger(self):
         if self.current_frame is None: return self.cfg["commands"]["error"]
         frame = self.current_frame.copy()
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         save_path = os.path.join(self.cfg["paths"]["save_dir"], f"IMG_{timestamp}.{self.cfg['paths']['save_format']}")
         
@@ -438,7 +437,6 @@ class UniversalVisionServer:
         result_str = self.cfg["commands"]["error"]
         
         if mode == "TEST":
-            # 测试模式
             K = np.array([
                 [self.cfg["camera"]["fx"], 0, self.cfg["camera"]["cx"]],
                 [0, self.cfg["camera"]["fy"], self.cfg["camera"]["cy"]],
@@ -448,14 +446,12 @@ class UniversalVisionServer:
             
             det = cv2.QRCodeDetector()
             ret, info, points, _ = det.detectAndDecodeMulti(frame)
-            
             if ret and points is not None:
                 pts = points[0]
                 cv2.polylines(frame, [pts.astype(int)], True, (0, 255, 0), 2)
                 qr_size = 100.0 
                 half = qr_size / 2.0
                 obj_pts = np.array([[-half, half, 0], [half, half, 0], [half, -half, 0], [-half, -half, 0]])
-                
                 succ, rvec, tvec = cv2.solvePnP(obj_pts, pts, K, dist)
                 if succ:
                     rmat, _ = cv2.Rodrigues(rvec)
@@ -464,15 +460,13 @@ class UniversalVisionServer:
                     sep = self.cfg["commands"]["separator"]
                     result_str = f"{prefix}{sep}{tvec[0][0]:.2f}{sep}{tvec[1][0]:.2f}{sep}{tvec[2][0]:.2f}{sep}{euler[0]:.2f}{sep}{euler[1]:.2f}{sep}{euler[2]:.2f}"
             else:
-                self.log("二维码检测失败")
+                self.log("无二维码")
 
         elif mode == "CALIB":
-            # 标定模式
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             rows = self.cfg["calibration"]["rows"]
             cols = self.cfg["calibration"]["cols"]
             ret, corners = cv2.findCirclesGrid(gray, (cols, rows), flags=cv2.CALIB_CB_SYMMETRIC_GRID)
-            
             if ret:
                 cv2.drawChessboardCorners(frame, (cols, rows), corners, ret)
                 self.calib_data_list.append({
@@ -484,10 +478,10 @@ class UniversalVisionServer:
                 self.root.after(0, self.refresh_calib_list)
                 result_str = self.cfg["commands"]["success_prefix"]
             else:
-                self.log("标定板检测失败")
+                self.log("无标定板")
 
         cv2.imwrite(save_path, frame)
-        self.log(f"已保存: {os.path.basename(save_path)}")
+        self.log(f"保存: {os.path.basename(save_path)}")
         return result_str
 
     def log(self, msg):
@@ -495,13 +489,9 @@ class UniversalVisionServer:
         self.root.after(0, lambda: self.txt_log.insert(tk.END, f"[{timestamp}] {msg}\n"))
         self.root.after(0, lambda: self.txt_log.see(tk.END))
 
-    def on_mode_change(self):
-        self.log(f"模式切换为: {self.work_mode.get()}")
-
     def refresh_calib_list(self):
         for item in self.tree_calib.get_children(): self.tree_calib.delete(item)
         for d in self.calib_data_list:
-            pose_str = str(d["robot_pose"]) if d["robot_pose"] else "双击填入坐标"
             self.tree_calib.insert("", "end", values=(
                 d["id"], os.path.basename(d["img_path"]), 
                 *(d["robot_pose"] if d["robot_pose"] else ["-"]*6),
@@ -540,7 +530,6 @@ class UniversalVisionServer:
             t_gripper2base = []
             R_target2cam = []
             t_target2cam = []
-            
             K = np.array([
                 [self.cfg["camera"]["fx"], 0, self.cfg["camera"]["cx"]],
                 [0, self.cfg["camera"]["fy"], self.cfg["camera"]["cy"]],
