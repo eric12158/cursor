@@ -320,20 +320,20 @@ class CalibrationSystemV3:
         cols = self.var_cols.get()
         spacing = self.var_spacing.get()
         
-        valid_indices = [i for i, d in enumerate(self.calib_images) if d['found']]
-        if not valid_indices: return
-        
-        # 1. 准备物理坐标
-        # 规则：Z=0，X和Y按间距分布
+        # 强制刷新 objp：确保每次点击"执行标定"时，都使用最新的 spacing
+        # 之前的代码可能复用了旧的 objp
         objp = np.zeros((rows * cols, 3), np.float32)
         objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
         objp = objp * spacing 
+        
+        valid_indices = [i for i, d in enumerate(self.calib_images) if d['found']]
+        if not valid_indices: return
         
         objpoints = [objp] * len(valid_indices)
         imgpoints = [self.calib_images[i]['corners'] for i in valid_indices]
         img_size = self.calib_images[valid_indices[0]]['gray_shape'] # w, h
         
-        self.log(f"正在计算... (图片数: {len(valid_indices)})")
+        self.log(f"正在计算... (图片数: {len(valid_indices)}, 间距: {spacing}mm)")
         self.root.update()
         
         try:
