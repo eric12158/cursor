@@ -180,10 +180,21 @@ class UniversalVisionServer:
         self.draw_placeholder()
 
     def setup_calib_ui(self, parent):
-        top = tk.Frame(parent)
-        top.pack(fill=tk.X, padx=5, pady=5)
-        tk.Button(top, text="刷新数据列表", command=self.refresh_calib_list).pack(side=tk.LEFT, padx=10)
-        tk.Button(top, text="计算手眼矩阵 (Calculate)", command=self.run_hand_eye_calc, bg="orange").pack(side=tk.LEFT, padx=10)
+        top_frame = tk.Frame(parent, bg="#f5f5f5", pady=5)
+        top_frame.pack(fill=tk.X)
+        
+        # 操作指引
+        tk.Label(top_frame, text="操作流程: 1.机械臂发'C1'拍照 -> 2.选中列表行 -> 3.手动录入坐标 -> 4.计算", bg="#f5f5f5", fg="blue").pack(side=tk.TOP, pady=5)
+        
+        btn_frame = tk.Frame(top_frame, bg="#f5f5f5")
+        btn_frame.pack(side=tk.TOP, pady=5)
+
+        tk.Button(btn_frame, text="刷新列表", command=self.refresh_calib_list).pack(side=tk.LEFT, padx=10)
+        
+        # 显式的大按钮用于手动录入
+        tk.Button(btn_frame, text="✎ 手动录入/修改坐标", command=self.on_edit_pose_btn, bg="#2196f3", fg="white", font=("bold", 10)).pack(side=tk.LEFT, padx=10)
+        
+        tk.Button(btn_frame, text="▶ 计算手眼矩阵", command=self.run_hand_eye_calc, bg="orange", font=("bold", 10)).pack(side=tk.LEFT, padx=10)
         
         columns = ("id", "img", "x", "y", "z", "rx", "ry", "rz", "ok")
         self.tree_calib = ttk.Treeview(parent, columns=columns, show="headings")
@@ -192,6 +203,8 @@ class UniversalVisionServer:
             self.tree_calib.column(col, width=60)
         self.tree_calib.column("img", width=200)
         self.tree_calib.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 绑定双击事件
         self.tree_calib.bind("<Double-1>", self.on_edit_pose)
         
         self.txt_calib_res = tk.Text(parent, height=10, bg="#e0e0e0", font=("Consolas", 10))
@@ -561,29 +574,48 @@ class UniversalVisionServer:
                 "Yes"
             ))
 
+    def on_edit_pose_btn(self):
+        # 按钮调用，处理当前选中的项
+        self.on_edit_pose(None)
+
     def on_edit_pose(self, event):
         sel = self.tree_calib.selection()
-        if not sel: return
+        if not sel: 
+            if event is None: # 如果是按钮触发的，提示一下
+                messagebox.showwarning("提示", "请先在列表中选中一行数据")
+            return
+            
         item = sel[0]
         idx = self.tree_calib.index(item)
         
         win = tk.Toplevel(self.root)
-        win.title(f"输入 Pose (ID: {idx+1})")
+        win.title(f"手动输入 Pose (第 {idx+1} 组)")
+        win.geometry("600x150")
+        
         ents = []
-        labels = ["X", "Y", "Z", "Rx", "Ry", "Rz"]
+        labels = ["X (mm)", "Y (mm)", "Z (mm)", "Rx (deg)", "Ry (deg)", "Rz (deg)"]
+        
+        # 布局优化
         for i, lbl in enumerate(labels):
-            tk.Label(win, text=lbl).grid(row=0, column=i)
-            e = tk.Entry(win, width=8)
-            e.grid(row=1, column=i)
+            f = tk.Frame(win)
+            f.grid(row=0, column=i, padx=5, pady=10)
+            tk.Label(f, text=lbl).pack()
+            e = tk.Entry(f, width=8)
+            e.pack()
+            # 如果已有数据，回填
+            if self.calib_data_list[idx]["robot_pose"]:
+                e.insert(0, str(self.calib_data_list[idx]["robot_pose"][i]))
             ents.append(e)
+            
         def confirm():
             try:
                 vals = [float(e.get()) for e in ents]
                 self.calib_data_list[idx]["robot_pose"] = vals
                 self.refresh_calib_list()
                 win.destroy()
-            except: messagebox.showerror("错误", "请输入数字")
-        tk.Button(win, text="确定", command=confirm).grid(row=2, column=0, columnspan=6)
+            except: messagebox.showerror("错误", "请输入有效的数字")
+            
+        tk.Button(win, text="确认保存 (Save)", command=confirm, bg="#4caf50", fg="white", width=20).grid(row=1, column=0, columnspan=6, pady=20)
 
     def run_hand_eye_calc(self):
         valid = [d for d in self.calib_data_list if d["robot_pose"]]
@@ -621,8 +653,12 @@ class UniversalVisionServer:
             rc, tc = cv2.calibrateHandEye(R_g2b, t_g2b, R_t2c, t_t2c, method=cv2.CALIB_HAND_EYE_TSAI)
             
             self.txt_calib_res.delete(1.0, tk.END)
-            self.txt_calib_res.insert(tk.END, f"标定成功!\n平移 XYZ: {tc.flatten()}\n")
-            self.txt_calib_res.insert(tk.END, f"旋转矩阵:\n{rc}\n")
+            self.txt_calib_res.insert(tk.END, f"标定成功!\n平移 XYZ (mm):\n{tc.flatten()}\n")
+            self.txt_calib_res.insert(tk.END, f"\n旋转矩阵 R:\n{rc}\n")
+            
+            # 转欧拉角方便看
+            euler = R.from_matrix(rc).as_euler('xyz', degrees=True)
+            self.txt_calib_res.insert(tk.END, f"\n旋转欧拉角 (Rx, Ry, Rz):\n{euler}\n")
             
         except Exception as e:
             self.txt_calib_res.insert(tk.END, f"计算失败: {e}\n")
