@@ -7,6 +7,14 @@ import json
 import datetime
 import sys
 
+# Try to import tkinter for folder selection
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    HAS_TKINTER = True
+except ImportError:
+    HAS_TKINTER = False
+
 class NumpyEncoder(json.JSONEncoder):
     """ Special json encoder for numpy types """
     def default(self, obj):
@@ -45,8 +53,32 @@ def get_blob_detector():
     
     return cv2.SimpleBlobDetector_create(blobParams)
 
+def select_folder_gui():
+    """Opens a folder selection dialog"""
+    if not HAS_TKINTER:
+        print("Tkinter not found. Please enter path manually.")
+        return None
+    
+    try:
+        # Create a root window but hide it
+        root = tk.Tk()
+        root.withdraw()
+        
+        # Bring dialog to front (might help on some OS)
+        root.lift()
+        root.attributes('-topmost', True)
+        
+        print("Opening folder selection dialog...")
+        folder_path = filedialog.askdirectory(title="Select Image Directory")
+        
+        root.destroy()
+        return folder_path if folder_path else None
+    except Exception as e:
+        print(f"Error opening dialog: {e}")
+        return None
+
 def calibrate(
-    image_dir, 
+    image_dir=None, 
     pattern_type="circles", 
     rows=7, 
     cols=7, 
@@ -57,29 +89,33 @@ def calibrate(
 ):
     """
     Main calibration function.
-    
-    Args:
-        image_dir (str): Directory containing images.
-        pattern_type (str): 'chessboard', 'circles', or 'asymmetric_circles'.
-        rows (int): Number of internal corners/circles in height.
-        cols (int): Number of internal corners/circles in width.
-        spacing (float): Physical distance between points (mm usually).
-        output_file (str): Path to save JSON result.
-        debug_dir (str): Path to save debug images.
-        show_process (bool): If True, show windows (requires GUI environment).
     """
     
-    # Check directory
-    if not os.path.exists(image_dir):
+    # 1. Handle image directory selection
+    if not image_dir:
+        print("No image directory provided via command line.")
+        image_dir = select_folder_gui()
+        
+        # Fallback to console input
+        if not image_dir:
+            image_dir = input("Please enter image folder path: ").strip()
+            # Remove quotes if user added them
+            if (image_dir.startswith('"') and image_dir.endswith('"')) or \
+               (image_dir.startswith("'") and image_dir.endswith("'")):
+                image_dir = image_dir[1:-1]
+    
+    # 2. Validate directory
+    if not image_dir or not os.path.exists(image_dir):
         print(f"Error: Directory '{image_dir}' does not exist.")
         return False
+
+    print(f"Processing images from: {image_dir}")
 
     # Create debug directory
     if debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
 
-    # Prepare object points (3D world points)
-    # The structure depends on the pattern type
+    # 3. Prepare object points (3D world points)
     pattern_size = (cols, rows) # (width, height)
     
     if pattern_type == "chessboard" or pattern_type == "circles":
@@ -102,7 +138,7 @@ def calibrate(
     objpoints = [] # 3d point in real world space
     imgpoints = [] # 2d points in image plane.
 
-    # Find images
+    # 4. Find images
     extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tif', '*.tiff']
     images = []
     for ext in extensions:
@@ -112,25 +148,24 @@ def calibrate(
         print(f"No images found in '{image_dir}'")
         return False
 
-    print(f"Found {len(images)} images in '{image_dir}'. processing...")
-    print(f"Configuration: Type={pattern_type}, Size={pattern_size}, Spacing={spacing}")
-
+    print(f"Found {len(images)} images. Processing...")
+    
     blob_detector = get_blob_detector() if "circles" in pattern_type else None
     
     img_shape = None
     success_count = 0
 
+    # 5. Process each image
     for fname in images:
         img = cv2.imread(fname)
         if img is None:
-            print(f"Warning: Could not read {fname}")
             continue
             
         if img_shape is None:
             img_shape = img.shape[:2][::-1] # (width, height)
         else:
             if img.shape[:2][::-1] != img_shape:
-                print(f"Warning: Skipping {fname} due to size mismatch.")
+                # print(f"Warning: Skipping {fname} due to size mismatch.")
                 continue
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -141,7 +176,6 @@ def calibrate(
         if pattern_type == "chessboard":
             found, corners = cv2.findChessboardCorners(gray, pattern_size, None)
             if found:
-                # Refine corners
                 term = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
                 corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), term)
                 
@@ -162,15 +196,14 @@ def calibrate(
             success_count += 1
             print(f"[OK] {filename}")
             
-            # Visualization
-            cv2.drawChessboardCorners(img, pattern_size, corners, found)
             if debug_dir:
+                cv2.drawChessboardCorners(img, pattern_size, corners, found)
                 cv2.imwrite(os.path.join(debug_dir, f"detected_{filename}"), img)
             if show_process:
                 cv2.imshow('Detection', img)
-                cv2.waitKey(100)
+                cv2.waitKey(50)
         else:
-            print(f"[FAIL] {filename} - Pattern not found")
+            print(f"[FAIL] {filename}")
 
     if show_process:
         cv2.destroyAllWindows()
@@ -181,6 +214,7 @@ def calibrate(
 
     print(f"\nCalibrating with {success_count} valid images...")
     
+    # 6. Run Calibration
     try:
         ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
             objpoints, imgpoints, img_shape, None, None
@@ -189,37 +223,20 @@ def calibrate(
         print(f"Calibration failed: {e}")
         return False
 
-    # Calculate Re-projection Error
-    mean_error = 0
-    for i in range(len(objpoints)):
-        imgpoints2, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], mtx, dist)
-        error = cv2.norm(imgpoints[i], imgpoints2, cv2.NORM_L2) / len(imgpoints2)
-        mean_error += error
-    total_error = mean_error / len(objpoints)
+    # ret is the RMS error
+    rms_error = ret
 
     print("\nCalibration Success!")
-    print(f"Re-projection Error: {total_error:.4f} pixels (lower is better)")
-    print("Camera Matrix:\n", mtx)
-    print("Distortion Coefficients:\n", dist)
-
-    # Save to JSON
+    print(f"RMS Error: {rms_error:.4f}")
+    
+    # 7. Save to JSON in specified format
     result_data = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "pattern_type": pattern_type,
-        "pattern_size": pattern_size,
-        "spacing_mm": spacing,
-        "image_width": img_shape[0],
-        "image_height": img_shape[1],
-        "reprojection_error": total_error,
-        "camera_matrix": mtx,
-        "dist_coeffs": dist,
-        "rvecs": rvecs, # Optional: might be too verbose
-        "tvecs": tvecs  # Optional: might be too verbose
+        "rms": rms_error,
+        "camera_matrix": mtx.tolist(),
+        "dist_coeffs": dist.tolist(),
+        "image_size": [img_shape[0], img_shape[1]],
+        "calibration_date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
-
-    # Simplify rvecs/tvecs for json (list of lists)
-    result_data["rvecs"] = [r.flatten().tolist() for r in rvecs]
-    result_data["tvecs"] = [t.flatten().tolist() for t in tvecs]
 
     try:
         with open(output_file, 'w') as f:
@@ -233,7 +250,8 @@ def calibrate(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OpenCV Camera Calibration Tool")
     
-    parser.add_argument("--dir", type=str, required=True, help="Path to image folder")
+    # Made --dir optional
+    parser.add_argument("--dir", type=str, help="Path to image folder (optional, will ask if empty)")
     parser.add_argument("--type", type=str, default="circles", choices=["chessboard", "circles", "asymmetric_circles"], help="Pattern type")
     parser.add_argument("--rows", type=int, default=7, help="Number of rows")
     parser.add_argument("--cols", type=int, default=7, help="Number of columns")
