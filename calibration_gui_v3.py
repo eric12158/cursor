@@ -327,20 +327,15 @@ class CalibrationSystemV3:
         valid_data = [d for d in self.calib_images if d['found']]
         if not valid_data: return
         
-        # --- 强制深拷贝与重新生成 ---
         # 1. 物理坐标 (World Points)
-        # 必须确保 dtype=float32
         objp = np.zeros((rows * cols, 3), np.float32)
         objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
-        objp = objp * float(spacing) # 强制乘法
+        objp = objp * float(spacing)
         
-        # 打印物理坐标的第一个点和最后一个点，确保 spacing 生效了
         self.log(f"[Debug] 物理间距: {spacing}")
         self.log(f"[Debug] 第2个点坐标: {objp[1]}")
-        self.log(f"[Debug] 最后点坐标: {objp[-1]}")
         
         # 2. 构建列表
-        # 这里的 copy() 至关重要，防止引用污染
         objpoints = []
         imgpoints = []
         
@@ -354,13 +349,19 @@ class CalibrationSystemV3:
         self.root.update()
         
         try:
-            # 清空旧结果
+            # 显式清空
             self.camera_matrix = None
             self.dist_coeffs = None
             
-            # 标定
+            # --- 关键修改：显式指定 flags=0，确保不使用任何缓存 ---
+            # 并且明确 cameraMatrix 和 distCoeffs 传入 None
             ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-                objpoints, imgpoints, img_size, None, None
+                objectPoints=objpoints, 
+                imagePoints=imgpoints, 
+                imageSize=img_size, 
+                cameraMatrix=None, 
+                distCoeffs=None,
+                flags=0 # 强制从零开始计算
             )
             
             self.camera_matrix = mtx
@@ -368,6 +369,11 @@ class CalibrationSystemV3:
             self.reproj_err = ret
             self.rvecs = rvecs
             self.tvecs = tvecs
+            
+            # 再次验证：我们把算出来的 Fx 和输入间距做个比值
+            # 理论上：Fx / spacing 应该是一个相对恒定的值（取决于图像像素坐标）
+            ratio = mtx[0,0] / spacing
+            self.log(f"[Debug] Fx / Spacing = {ratio:.2f}")
             
             # 将位姿索引存回数据结构
             for k, idx in enumerate([i for i, d in enumerate(self.calib_images) if d['found']]):
