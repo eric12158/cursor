@@ -192,6 +192,27 @@ class HikCameraWrapper:
                 print(f"[SDK Warning] GetFrame 异常: {hex(ret)}")
             return False, None
 
+    def set_exposure(self, value):
+        if not self.is_opened: return
+        self.handle.MV_CC_SetEnumValue("ExposureAuto", 0) # Off
+        self.handle.MV_CC_SetFloatValue("ExposureTime", float(value))
+
+    def set_gain(self, value):
+        if not self.is_opened: return
+        self.handle.MV_CC_SetEnumValue("GainAuto", 0) # Off
+        self.handle.MV_CC_SetFloatValue("Gain", float(value))
+
+    def set_trigger_mode(self, is_trigger):
+        if not self.is_opened: return
+        # 0: Off, 1: On
+        self.handle.MV_CC_SetEnumValue("TriggerMode", 1 if is_trigger else 0)
+        if is_trigger:
+            self.handle.MV_CC_SetEnumValue("TriggerSource", 7) # Software
+
+    def soft_trigger(self):
+        if not self.is_opened: return
+        self.handle.MV_CC_SetCommandValue("TriggerSoftware")
+
     def release(self):
         if self.handle:
             self.handle.MV_CC_StopGrabbing()
@@ -371,6 +392,9 @@ class UniversalVisionServer:
         notebook.add(frame_cfg, text="3. 系统配置 (Config)")
         self.setup_config_ui(frame_cfg)
 
+        # 全局快捷键
+        self.root.bind('<F5>', lambda e: self.manual_trigger())
+
     def setup_run_ui(self, parent):
         paned = tk.PanedWindow(parent, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
@@ -414,6 +438,33 @@ class UniversalVisionServer:
         self.work_mode = tk.StringVar(value="TEST")
         tk.Radiobutton(w_frame, text="测试模式 (识别二维码，回传坐标)", variable=self.work_mode, value="TEST", command=self.on_mode_change).pack(anchor="w", padx=5)
         tk.Radiobutton(w_frame, text="标定模式 (识别标定板，仅存图)", variable=self.work_mode, value="CALIB", command=self.on_mode_change).pack(anchor="w", padx=5)
+
+        # 4.5 相机参数 (新增)
+        c_frame = tk.LabelFrame(left_frame, text="相机参数 (Camera)", font=("bold", 10), fg="purple")
+        c_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Exposure
+        f_exp = tk.Frame(c_frame)
+        f_exp.pack(fill=tk.X, padx=5, pady=2)
+        tk.Label(f_exp, text="曝光(us):").pack(side=tk.LEFT)
+        self.var_exp = tk.DoubleVar(value=5000)
+        tk.Entry(f_exp, textvariable=self.var_exp, width=8).pack(side=tk.LEFT, padx=5)
+        tk.Button(f_exp, text="设置", command=self.apply_exposure, width=5, bg="#e1bee7").pack(side=tk.LEFT)
+        
+        # Gain
+        f_gain = tk.Frame(c_frame)
+        f_gain.pack(fill=tk.X, padx=5, pady=2)
+        tk.Label(f_gain, text="增益(dB):").pack(side=tk.LEFT)
+        self.var_gain = tk.DoubleVar(value=0)
+        tk.Entry(f_gain, textvariable=self.var_gain, width=8).pack(side=tk.LEFT, padx=5)
+        tk.Button(f_gain, text="设置", command=self.apply_gain, width=5, bg="#e1bee7").pack(side=tk.LEFT)
+
+        # Trigger
+        f_trig = tk.Frame(c_frame)
+        f_trig.pack(fill=tk.X, padx=5, pady=2)
+        self.var_soft_trig = tk.BooleanVar(value=False)
+        tk.Checkbutton(f_trig, text="软触发模式", variable=self.var_soft_trig, command=self.toggle_trigger_mode).pack(side=tk.LEFT)
+        tk.Button(f_trig, text="执行触发", command=self.do_soft_trigger, bg="orange").pack(side=tk.LEFT, padx=10)
 
         # 5. 日志
         l_frame = tk.LabelFrame(left_frame, text="系统日志", font=("bold", 10))
@@ -583,6 +634,50 @@ class UniversalVisionServer:
         else:
             self.lbl_scan_res.config(text="未发现")
             messagebox.showwarning("提示", "未扫描到 GigE 设备，请确认相机已连接且处于同一网段。")
+
+    # --- 相机参数控制 ---
+    def apply_exposure(self):
+        try:
+            val = self.var_exp.get()
+            if self.cap and hasattr(self.cap, 'set_exposure'):
+                self.cap.set_exposure(val)
+                self.log(f"曝光已设为: {val}")
+            else:
+                self.log("未连接相机或不支持")
+        except Exception as e:
+            self.log(f"设置曝光失败: {e}")
+
+    def apply_gain(self):
+        try:
+            val = self.var_gain.get()
+            if self.cap and hasattr(self.cap, 'set_gain'):
+                self.cap.set_gain(val)
+                self.log(f"增益已设为: {val}")
+            else:
+                self.log("未连接相机或不支持")
+        except Exception as e:
+            self.log(f"设置增益失败: {e}")
+
+    def toggle_trigger_mode(self):
+        try:
+            val = self.var_soft_trig.get()
+            if self.cap and hasattr(self.cap, 'set_trigger_mode'):
+                self.cap.set_trigger_mode(val)
+                self.log(f"触发模式: {'软触发' if val else '连续采集'}")
+            else:
+                self.log("未连接相机或不支持")
+        except Exception as e:
+            self.log(f"切换模式失败: {e}")
+
+    def do_soft_trigger(self):
+        try:
+            if self.cap and hasattr(self.cap, 'soft_trigger'):
+                self.cap.soft_trigger()
+                self.log("已发送软触发信号")
+            else:
+                self.log("未连接相机")
+        except Exception as e:
+            self.log(f"触发失败: {e}")
 
     def test_camera(self):
         self.update_cfg_from_ui()
