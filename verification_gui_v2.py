@@ -10,7 +10,7 @@ import math
 class VerificationApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("相机测距验证工具 V2.3 (重投影验证版)")
+        self.root.title("相机测距验证工具 V2.4 (姿态稳定优化版)")
         self.root.geometry("1400x900")
         
         # 默认参数
@@ -140,26 +140,105 @@ class VerificationApp:
     def get_scaled_camera_matrix(self, current_w, current_h):
         """核心算法：根据分辨率差异自动缩放内参"""
         if self.calib_img_size is None or self.camera_matrix is None:
-            return self.camera_matrix, 1.0
+            return self.camera_matrix, (1.0, 1.0)
             
         calib_w, calib_h = self.calib_img_size
-        scale_factor = current_w / float(calib_w)
+        # 注意：如果当前分辨率和标定分辨率的宽高缩放不一致（例如非等比缩放/裁剪），
+        # 只按宽度缩放会导致 fx/fy、cx/cy 不匹配，从而显著放大 Rx/Ry 误差。
+        sx = current_w / float(calib_w)
+        sy = current_h / float(calib_h)
         
-        if abs(scale_factor - 1.0) < 0.01:
-            return self.camera_matrix, 1.0
+        if abs(sx - 1.0) < 0.01 and abs(sy - 1.0) < 0.01:
+            return self.camera_matrix, (1.0, 1.0)
             
         self.log("-" * 30)
         self.log(f"检测到分辨率不匹配！")
         self.log(f"标定: {calib_w}x{calib_h} -> 当前: {current_w}x{current_h}")
-        self.log(f"自动应用缩放系数: {scale_factor:.4f}")
+        self.log(f"自动应用缩放系数: sx={sx:.6f}, sy={sy:.6f}")
+        if abs(sx - sy) > 0.01:
+            self.log("警告：sx != sy，当前图像可能经过非等比缩放或裁剪，姿态角误差可能增大。")
         
         new_matrix = self.camera_matrix.copy()
-        new_matrix[0, 0] *= scale_factor # fx
-        new_matrix[1, 1] *= scale_factor # fy
-        new_matrix[0, 2] *= scale_factor # cx
-        new_matrix[1, 2] *= scale_factor # cy
+        new_matrix[0, 0] *= sx  # fx
+        new_matrix[1, 1] *= sy  # fy
+        new_matrix[0, 2] *= sx  # cx
+        new_matrix[1, 2] *= sy  # cy
         
-        return new_matrix, scale_factor
+        return new_matrix, (sx, sy)
+
+    @staticmethod
+    def _order_quad_points(pts_4x2: np.ndarray) -> np.ndarray:
+        """
+        将四边形角点重排为 TL, TR, BR, BL（与 obj_points 一致）。
+        QRCodeDetector 的点序在不同 OpenCV 版本/不同姿态下可能不稳定，不重排会直接导致 Rx/Ry 抖动或翻转。
+        """
+        pts = np.asarray(pts_4x2, dtype=np.float64).reshape(4, 2)
+        s = pts.sum(axis=1)              # x+y
+        d = (pts[:, 0] - pts[:, 1])      # x-y
+
+        tl = pts[np.argmin(s)]
+        br = pts[np.argmax(s)]
+        tr = pts[np.argmax(d)]
+        bl = pts[np.argmin(d)]
+        return np.stack([tl, tr, br, bl], axis=0)
+
+    @staticmethod
+    def _mean_reproj_error(obj_pts: np.ndarray, img_pts: np.ndarray, rvec: np.ndarray, tvec: np.ndarray,
+                           camera_mtx: np.ndarray, dist_coeffs: np.ndarray) -> float:
+        proj, _ = cv2.projectPoints(obj_pts, rvec, tvec, camera_mtx, dist_coeffs)
+        proj = proj.reshape(-1, 2)
+        err = np.linalg.norm(proj - img_pts.reshape(-1, 2), axis=1)
+        return float(np.mean(err))
+
+    def _solve_pose_square(self, obj_points: np.ndarray, img_points: np.ndarray,
+                           camera_mtx: np.ndarray, dist_coeffs: np.ndarray):
+        """
+        针对平面正方形：优先用 IPPE_SQUARE（会给出双解），用重投影误差 + Z>0 选最优解，再用 LM 精修。
+        若当前 OpenCV 不支持 solvePnPGeneric/IPPE，则回退到 ITERATIVE + LM 精修。
+        """
+        img_points = np.asarray(img_points, dtype=np.float64).reshape(4, 2)
+
+        best_rvec = None
+        best_tvec = None
+        best_err = None
+
+        # 1) 首选：IPPE 正方形双解
+        try:
+            ret, rvecs, tvecs, _ = cv2.solvePnPGeneric(
+                obj_points, img_points, camera_mtx, dist_coeffs, flags=cv2.SOLVEPNP_IPPE_SQUARE
+            )
+            if ret and rvecs is not None and tvecs is not None and len(rvecs) > 0:
+                for rv, tv in zip(rvecs, tvecs):
+                    tv = tv.reshape(3, 1)
+                    rv = rv.reshape(3, 1)
+                    err = self._mean_reproj_error(obj_points, img_points, rv, tv, camera_mtx, dist_coeffs)
+                    z_ok = float(tv[2, 0]) > 0.0
+                    # 优先选择 Z>0 的解；在同类解里选误差更小的
+                    score = (0 if z_ok else 1, err)
+                    if best_err is None or score < best_err:
+                        best_err = score
+                        best_rvec, best_tvec = rv, tv
+        except Exception:
+            best_rvec = None
+            best_tvec = None
+
+        # 2) 回退：ITERATIVE
+        if best_rvec is None or best_tvec is None:
+            ok, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_mtx, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
+            if not ok:
+                return False, None, None, None
+            best_rvec, best_tvec = rvec, tvec
+
+        # 3) LM 精修（对角度抖动很关键）
+        try:
+            rvec_ref, tvec_ref = cv2.solvePnPRefineLM(
+                obj_points, img_points, camera_mtx, dist_coeffs, best_rvec, best_tvec
+            )
+        except Exception:
+            rvec_ref, tvec_ref = best_rvec, best_tvec
+
+        reproj_err = self._mean_reproj_error(obj_points, img_points, rvec_ref, tvec_ref, camera_mtx, dist_coeffs)
+        return True, rvec_ref, tvec_ref, reproj_err
 
     def run_measurement(self):
         if self.camera_matrix is None:
@@ -199,13 +278,16 @@ class VerificationApp:
         ], dtype=np.float64)
         
         for i in range(len(points)):
-            img_points = points[i].reshape(4, 2).astype(np.float64)
+            # 强制角点顺序对齐：TL,TR,BR,BL
+            img_points = self._order_quad_points(points[i].reshape(4, 2))
             
-            # PnP 解算
-            success, rvec, tvec = cv2.solvePnP(obj_points, img_points, current_matrix, self.dist_coeffs)
+            # PnP 解算（针对正方形：IPPE 双解选解 + LM 精修，显著降低 Rx/Ry 抖动）
+            success, rvec, tvec, reproj_err = self._solve_pose_square(
+                obj_points, img_points, current_matrix, self.dist_coeffs
+            )
             
             if success:
-                dist_mm = np.linalg.norm(tvec)
+                dist_mm = float(np.linalg.norm(tvec))
                 
                 # --- 计算欧拉角 ---
                 rmat, _ = cv2.Rodrigues(rvec)
@@ -233,6 +315,8 @@ class VerificationApp:
                 self.log(f"计算距离: {dist_mm:.2f} mm")
                 self.log(f"旋转角度 (欧拉角): Rx={rx:.2f}°, Ry={ry:.2f}°, Rz={rz:.2f}°")
                 self.log(f"平移 (X,Y,Z): {tvec[0][0]:.2f}, {tvec[1][0]:.2f}, {tvec[2][0]:.2f}")
+                if reproj_err is not None:
+                    self.log(f"平均重投影误差: {reproj_err:.3f} px")
                 
             else:
                 self.log(f"QR #{i+1} PnP解算失败")
