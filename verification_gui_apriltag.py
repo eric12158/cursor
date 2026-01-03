@@ -58,7 +58,12 @@ class VerificationApp:
         self.lbl_curr_res = tk.Label(mid_frame, text="", fg="blue")
         self.lbl_curr_res.pack(side=tk.LEFT, padx=5)
         
-        tk.Label(mid_frame, text="AprilTag真实边长(mm):").pack(side=tk.LEFT, padx=(20, 5))
+        tk.Label(mid_frame, text="标签家族:").pack(side=tk.LEFT, padx=(20, 5))
+        self.tag_family_var = tk.StringVar(value="tag25h9")
+        families = ["自动检测", "tag16h5", "tag25h9", "tag36h11", "tagCircle21h7", "tagStandard41h12"]
+        tk.OptionMenu(mid_frame, self.tag_family_var, *families, command=self.on_family_change).pack(side=tk.LEFT)
+        
+        tk.Label(mid_frame, text="边长(mm):").pack(side=tk.LEFT, padx=(10, 5))
         self.tag_size_var = tk.DoubleVar(value=26.0)
         tk.Entry(mid_frame, textvariable=self.tag_size_var, width=8).pack(side=tk.LEFT)
         
@@ -102,6 +107,33 @@ class VerificationApp:
     def clear_history(self):
         self.pose_history.clear()
         self.log("已清除历史数据")
+    
+    def on_family_change(self, value):
+        """切换标签家族时重新初始化检测器"""
+        if APRILTAG_AVAILABLE and self.camera_matrix is not None:
+            self.init_detector()
+            self.log(f"已切换到 {value} 家族")
+    
+    def init_detector(self):
+        """初始化AprilTag检测器"""
+        if not APRILTAG_AVAILABLE:
+            return
+        
+        family = self.tag_family_var.get() if hasattr(self, 'tag_family_var') else 'tag25h9'
+        
+        # 自动检测模式：使用所有常见家族
+        if family == "自动检测":
+            family = "tag16h5 tag25h9 tag36h11"
+        
+        self.detector = Detector(
+            families=family,
+            nthreads=4,
+            quad_decimate=1.0,
+            quad_sigma=0.0,
+            refine_edges=1,
+            decode_sharpening=0.25
+        )
+        self.log(f"AprilTag检测器已初始化: {family}")
         
     def load_params_from_file(self):
         fpath = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])
@@ -121,21 +153,9 @@ class VerificationApp:
                 self.calib_img_size = None
                 self.lbl_calib_res.config(text="标定分辨率: 未知")
 
-            # 初始化AprilTag检测器
+            # 初始化AprilTag检测器（将在检测时根据家族重新初始化）
             if APRILTAG_AVAILABLE:
-                fx = self.camera_matrix[0, 0]
-                fy = self.camera_matrix[1, 1]
-                cx = self.camera_matrix[0, 2]
-                cy = self.camera_matrix[1, 2]
-                self.detector = Detector(
-                    families='tag36h11',
-                    nthreads=4,
-                    quad_decimate=1.0,
-                    quad_sigma=0.0,
-                    refine_edges=1,
-                    decode_sharpening=0.25
-                )
-                self.log(f"AprilTag检测器已初始化 (tag36h11)")
+                self.init_detector()
 
             self.lbl_param_status.config(text=f"参数已加载: {os.path.basename(fpath)}", fg="green")
             self.log(f"成功加载参数文件: {fpath}")
@@ -336,6 +356,9 @@ class VerificationApp:
         h, w = self.current_cv_img.shape[:2]
         current_matrix, scale_applied = self.get_scaled_camera_matrix(w, h)
 
+        # 确保检测器使用正确的家族
+        self.init_detector()
+
         img_temp = self.current_cv_img.copy()
         gray = cv2.cvtColor(img_temp, cv2.COLOR_BGR2GRAY)
         
@@ -349,6 +372,7 @@ class VerificationApp:
         cx = current_matrix[0, 2]
         cy = current_matrix[1, 2]
         
+        self.log(f"使用家族: {self.tag_family_var.get()}")
         tags = self.detector.detect(gray_enhanced, estimate_tag_pose=False, camera_params=[fx, fy, cx, cy], tag_size=tag_size/1000.0)
         
         if not tags:
@@ -369,7 +393,7 @@ class VerificationApp:
         ], dtype=np.float64)
         
         for i, tag in enumerate(tags):
-            self.log(f"\n--- AprilTag ID={tag.tag_id} ---")
+            self.log(f"\n--- AprilTag ID={tag.tag_id} (家族:{tag.tag_family.decode()}) ---")
             
             # 获取角点 (AprilTag格式: 左下,右下,右上,左上)
             corners = tag.corners.astype(np.float32)
