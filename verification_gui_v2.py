@@ -10,7 +10,7 @@ import math
 class VerificationApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("相机测距验证工具 V2.3 (重投影验证版)")
+        self.root.title("相机测距验证工具 V2.4 (5点亚像素优化版)")
         self.root.geometry("1400x900")
         
         # 默认参数
@@ -181,8 +181,9 @@ class VerificationApp:
 
         # 2. 检测二维码
         img_temp = self.current_cv_img.copy()
+        gray = cv2.cvtColor(img_temp, cv2.COLOR_BGR2GRAY)
         detector = cv2.QRCodeDetector()
-        retval, decoded_info, points, _ = detector.detectAndDecodeMulti(img_temp)
+        retval, decoded_info, points, _ = detector.detectAndDecodeMulti(gray)
         
         if not retval:
             self.log("未检测到二维码。")
@@ -190,30 +191,75 @@ class VerificationApp:
             
         self.log(f"检测到 {len(points)} 个二维码。")
         
-        # 准备 3D 坐标
+        # 准备 3D 坐标（5个点：4个角点 + 1个中心点）
+        half_size = qr_real_size / 2.0
         obj_points = np.array([
-            [0, 0, 0],              # TL
-            [qr_real_size, 0, 0],   # TR
-            [qr_real_size, qr_real_size, 0], # BR
-            [0, qr_real_size, 0]    # BL
+            [0, 0, 0],                      # TL (左上)
+            [qr_real_size, 0, 0],           # TR (右上)
+            [qr_real_size, qr_real_size, 0], # BR (右下)
+            [0, qr_real_size, 0],           # BL (左下)
+            [half_size, half_size, 0]       # CENTER (中心点)
         ], dtype=np.float64)
         
         for i in range(len(points)):
-            img_points = points[i].reshape(4, 2).astype(np.float64)
+            # 获取4个角点
+            img_points_4 = points[i].reshape(4, 2).astype(np.float32)
             
-            # PnP 解算
-            success, rvec, tvec = cv2.solvePnP(obj_points, img_points, current_matrix, self.dist_coeffs)
+            # 计算中心点（4个角点的均值）
+            center_point = np.mean(img_points_4, axis=0, keepdims=True).astype(np.float32)
+            
+            # 合并为5个点
+            img_points_5 = np.vstack([img_points_4, center_point])
+            
+            # === 亚像素精度优化 ===
+            # cornerSubPix 参数：
+            # - winSize: 搜索窗口的一半大小
+            # - zeroZone: 死区的一半大小，-1表示没有死区
+            # - criteria: 停止迭代的条件
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            img_points_refined = cv2.cornerSubPix(
+                gray, 
+                img_points_5.copy(), 
+                winSize=(5, 5),      # 搜索窗口 11x11
+                zeroZone=(-1, -1),   # 无死区
+                criteria=criteria
+            )
+            
+            # 转换为float64用于PnP
+            img_points_refined = img_points_refined.astype(np.float64)
+            
+            # 日志：显示亚像素优化的改进
+            pixel_shift = np.linalg.norm(img_points_5 - img_points_refined, axis=1)
+            avg_shift = np.mean(pixel_shift)
+            max_shift = np.max(pixel_shift)
+            self.log(f"\n--- QR Code #{i+1} 亚像素优化 ---")
+            self.log(f"平均偏移: {avg_shift:.4f} 像素, 最大偏移: {max_shift:.4f} 像素")
+            
+            # PnP 解算（使用5个点和适配后的 current_matrix）
+            success, rvec, tvec = cv2.solvePnP(
+                obj_points, 
+                img_points_refined, 
+                current_matrix, 
+                self.dist_coeffs,
+                flags=cv2.SOLVEPNP_ITERATIVE  # 使用迭代法，适用于5点
+            )
             
             if success:
-                dist_mm = np.linalg.norm(tvec)
+                # Levenberg-Marquardt 非线性优化
+                rvec_refine, tvec_refine = cv2.solvePnPRefineLM(
+                    obj_points, img_points_refined, current_matrix, self.dist_coeffs,
+                    rvec, tvec  # 传入初始值进行优化
+                )
+                
+                dist_mm = np.linalg.norm(tvec_refine)
                 
                 # --- 计算欧拉角 ---
-                rmat, _ = cv2.Rodrigues(rvec)
+                rmat, _ = cv2.Rodrigues(rvec_refine)
                 sy = math.sqrt(rmat[0,0] * rmat[0,0] +  rmat[1,0] * rmat[1,0])
                 singular = sy < 1e-6
 
                 if not singular:
-                    x = math.atan2(rmat[2,1] , rmat[2,2])
+                    x = math.atan2(rmat[2,1], rmat[2,2])
                     y = math.atan2(-rmat[2,0], sy)
                     z = math.atan2(rmat[1,0], rmat[0,0])
                 else:
@@ -225,14 +271,14 @@ class VerificationApp:
                 ry = math.degrees(y)
                 rz = math.degrees(z)
                 
-                # 绘制结果
-                self._draw_overlay(img_temp, img_points, rvec, tvec, dist_mm, (rx, ry, rz), i, current_matrix, obj_points)
+                # 绘制结果（传入5个优化后的点）
+                self._draw_overlay(img_temp, img_points_refined, rvec_refine, tvec_refine, 
+                                  dist_mm, (rx, ry, rz), i, current_matrix, obj_points)
                 
                 # 详细日志
-                self.log(f"\n--- QR Code #{i+1} ---")
                 self.log(f"计算距离: {dist_mm:.2f} mm")
                 self.log(f"旋转角度 (欧拉角): Rx={rx:.2f}°, Ry={ry:.2f}°, Rz={rz:.2f}°")
-                self.log(f"平移 (X,Y,Z): {tvec[0][0]:.2f}, {tvec[1][0]:.2f}, {tvec[2][0]:.2f}")
+                self.log(f"平移 (X,Y,Z): {tvec_refine[0][0]:.2f}, {tvec_refine[1][0]:.2f}, {tvec_refine[2][0]:.2f}")
                 
             else:
                 self.log(f"QR #{i+1} PnP解算失败")
@@ -244,44 +290,55 @@ class VerificationApp:
         pts = pts.astype(np.int32)
         rx, ry, rz = angles
         
-        # 1. 画绿色边框
+        # pts现在是5个点：前4个是角点，第5个是中心点
+        corner_pts = pts[:4]  # 前4个角点
+        center_pt = pts[4]    # 第5个中心点
+        
+        # 1. 画绿色边框（连接4个角点）
         for j in range(4):
-            cv2.line(img, tuple(pts[j]), tuple(pts[(j+1)%4]), (0, 255, 0), 2)
+            cv2.line(img, tuple(corner_pts[j]), tuple(corner_pts[(j+1)%4]), (0, 255, 0), 2)
             
-        # 2. 标记角点
+        # 2. 标记4个角点
         labels = ["TL", "TR", "BR", "BL"]
-        for j, pt in enumerate(pts):
+        for j, pt in enumerate(corner_pts):
             cv2.circle(img, tuple(pt), 4, (0, 0, 255), -1)
             cv2.putText(img, labels[j], (pt[0]+10, pt[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        
+        # 2.5. 标记中心点（用更大的紫色圆）
+        cv2.circle(img, tuple(center_pt), 6, (255, 0, 255), -1)  # 紫色实心圆
+        cv2.circle(img, tuple(center_pt), 8, (255, 0, 255), 2)   # 紫色外圈
+        cv2.putText(img, "CENTER", (center_pt[0]+10, center_pt[1]-10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
 
-        # 3. 绘制坐标轴 (传入适配后的 camera_mtx)
+        # 3. 绘制坐标轴（传入适配后的 camera_mtx）
         axis_len = 15.0 
         axis_pts = np.float32([[0,0,0], [axis_len,0,0], [0,axis_len,0], [0,0,-axis_len]]).reshape(-1,3)
         imgpts, _ = cv2.projectPoints(axis_pts, rvec, tvec, camera_mtx, self.dist_coeffs)
         imgpts = imgpts.astype(np.int32)
         
         origin = tuple(imgpts[0].ravel())
-        cv2.line(img, origin, tuple(imgpts[1].ravel()), (0, 0, 255), 3) # X
-        cv2.line(img, origin, tuple(imgpts[2].ravel()), (0, 255, 0), 3) # Y
-        cv2.line(img, origin, tuple(imgpts[3].ravel()), (255, 0, 0), 3) # Z
+        cv2.line(img, origin, tuple(imgpts[1].ravel()), (0, 0, 255), 3) # X - 红色
+        cv2.line(img, origin, tuple(imgpts[2].ravel()), (0, 255, 0), 3) # Y - 绿色
+        cv2.line(img, origin, tuple(imgpts[3].ravel()), (255, 0, 0), 3) # Z - 蓝色
         
-        # 4. 重投影验证 (Yellow Circles)
+        # 4. 重投影验证（Yellow Circles）- 现在包含5个点
         if self.check_reproject.get():
             reproj_pts, _ = cv2.projectPoints(obj_points, rvec, tvec, camera_mtx, self.dist_coeffs)
             reproj_pts = reproj_pts.reshape(-1, 2).astype(np.int32)
-            for pt in reproj_pts:
-                # 画空心黄圈，套在红色实心点外面
-                cv2.circle(img, tuple(pt), 8, (0, 255, 255), 2)
+            for k, pt in enumerate(reproj_pts):
+                # 画空心黄圈，套在红色/紫色实心点外面
+                radius = 10 if k == 4 else 8  # 中心点用更大的圈
+                cv2.circle(img, tuple(pt), radius, (0, 255, 255), 2)
         
-        # 5. 显示文字
-        center_x = int(np.mean(pts[:,0]))
-        center_y = int(np.mean(pts[:,1]))
+        # 5. 显示文字（使用中心点的位置）
+        center_x = center_pt[0]
+        center_y = center_pt[1]
         
         info_dist = f"Dist: {dist:.1f}mm"
         info_rot = f"R: {rx:.1f}, {ry:.1f}, {rz:.1f}"
         
-        cv2.putText(img, info_dist, (center_x, center_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-        cv2.putText(img, info_rot, (center_x, center_y+30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        cv2.putText(img, info_dist, (center_x, center_y + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+        cv2.putText(img, info_rot, (center_x, center_y + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
     def display_image(self):
         if self.current_cv_img is None: return
