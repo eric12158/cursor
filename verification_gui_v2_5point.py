@@ -10,7 +10,7 @@ import math
 class VerificationApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("相机测距验证工具 V2.4 (5点亚像素优化版)")
+        self.root.title("相机测距验证工具 V2.5 (IPPE_SQUARE增强版)")
         self.root.geometry("1400x900")
         
         # 默认参数
@@ -38,6 +38,7 @@ class VerificationApp:
         
         tk.Button(top_frame, text="从 JSON 文件加载参数", command=self.load_params_from_file, bg="#e3f2fd").pack(side=tk.LEFT, padx=5)
         
+        # 显示标定时的分辨率
         self.lbl_calib_res = tk.Label(top_frame, text="", fg="gray")
         self.lbl_calib_res.pack(side=tk.LEFT, padx=20)
 
@@ -54,9 +55,6 @@ class VerificationApp:
         tk.Entry(mid_frame, textvariable=self.qr_size_var, width=8).pack(side=tk.LEFT)
         
         tk.Button(mid_frame, text="执行测距与姿态解算", command=self.run_measurement, bg="#fff3e0", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=20)
-        
-        self.check_reproject = tk.BooleanVar(value=True)
-        tk.Checkbutton(mid_frame, text="显示重投影验证点(黄色)", variable=self.check_reproject).pack(side=tk.LEFT, padx=10)
         
         # 3. 主视图
         main_paned = tk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -96,6 +94,7 @@ class VerificationApp:
             self.camera_matrix = np.array(data["camera_matrix"], dtype=np.float64)
             self.dist_coeffs = np.array(data["dist_coeffs"], dtype=np.float64)
             
+            # 读取标定时的分辨率
             if "image_size" in data:
                 self.calib_img_size = tuple(data["image_size"]) # (w, h)
                 self.lbl_calib_res.config(text=f"标定分辨率: {self.calib_img_size[0]}x{self.calib_img_size[1]}")
@@ -143,8 +142,11 @@ class VerificationApp:
             return self.camera_matrix, 1.0
             
         calib_w, calib_h = self.calib_img_size
+        
+        # 计算缩放因子 (以宽度为准)
         scale_factor = current_w / float(calib_w)
         
+        # 如果尺寸差异很小，就不处理
         if abs(scale_factor - 1.0) < 0.01:
             return self.camera_matrix, 1.0
             
@@ -179,12 +181,20 @@ class VerificationApp:
         h, w = self.current_cv_img.shape[:2]
         current_matrix, scale_applied = self.get_scaled_camera_matrix(w, h)
 
-        # 2. 检测二维码
+        # 2. 检测二维码 - 增强预处理
         img_temp = self.current_cv_img.copy()
         gray = cv2.cvtColor(img_temp, cv2.COLOR_BGR2GRAY)
+        
+        # 增强对比度 (CLAHE - 对比度受限自适应直方图均衡化)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+        
+        # 双边滤波：保留边缘的同时降噪
+        gray = cv2.bilateralFilter(gray, 5, 50, 50)
+        
         detector = cv2.QRCodeDetector()
         retval, decoded_info, points, _ = detector.detectAndDecodeMulti(gray)
-        
+ 
         if not retval:
             self.log("未检测到二维码。")
             return
@@ -211,18 +221,15 @@ class VerificationApp:
             # 合并为5个点
             img_points_5 = np.vstack([img_points_4, center_point])
             
-            # === 亚像素精度优化 ===
-            # cornerSubPix 参数：
-            # - winSize: 搜索窗口的一半大小
-            # - zeroZone: 死区的一半大小，-1表示没有死区
-            # - criteria: 停止迭代的条件
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            # === 亚像素精度优化（增强版）===
+            # 使用更大的搜索窗口和更严格的收敛条件
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
             img_points_refined = cv2.cornerSubPix(
                 gray, 
                 img_points_5.copy(), 
-                winSize=(5, 5),      # 搜索窗口 11x11
+                winSize=(10, 10),    # 搜索窗口 21x21 (更大，更精确)
                 zeroZone=(-1, -1),   # 无死区
-                criteria=criteria
+                criteria=criteria    # 更多迭代次数，更高精度
             )
             
             # 转换为float64用于PnP
@@ -235,29 +242,86 @@ class VerificationApp:
             self.log(f"\n--- QR Code #{i+1} 亚像素优化 ---")
             self.log(f"平均偏移: {avg_shift:.4f} 像素, 最大偏移: {max_shift:.4f} 像素")
             
-            # PnP 解算（使用5个点和适配后的 current_matrix）
-            success, rvec, tvec = cv2.solvePnP(
+            # === 使用两种方法对比 ===
+            # 方法1: IPPE_SQUARE (专为正方形设计，仅使用前4个角点)
+            obj_points_4 = obj_points[:4]  # 只用4个角点
+            img_points_4_refined = img_points_refined[:4]
+            
+            success1, rvec1, tvec1 = cv2.solvePnP(
+                obj_points_4, 
+                img_points_4_refined, 
+                current_matrix, 
+                self.dist_coeffs,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE  # 专为正方形优化，更稳定
+            )
+            
+            # 方法2: 使用全部5个点的迭代法
+            success2, rvec2, tvec2 = cv2.solvePnP(
                 obj_points, 
                 img_points_refined, 
                 current_matrix, 
                 self.dist_coeffs,
-                flags=cv2.SOLVEPNP_ITERATIVE  # 使用迭代法，适用于5点
+                flags=cv2.SOLVEPNP_ITERATIVE
             )
             
-            if success:
+            # 选择重投影误差更小的方法
+            use_ippe = False  # 标记使用哪种方法
+            error1 = error2 = 999.0  # 初始化误差值
+            
+            if success1 and success2:
+                # 计算重投影误差
+                reproj1, _ = cv2.projectPoints(obj_points_4, rvec1, tvec1, current_matrix, self.dist_coeffs)
+                error1 = np.mean(np.linalg.norm(img_points_4_refined - reproj1.reshape(-1, 2), axis=1))
+                
+                reproj2, _ = cv2.projectPoints(obj_points, rvec2, tvec2, current_matrix, self.dist_coeffs)
+                error2 = np.mean(np.linalg.norm(img_points_refined - reproj2.reshape(-1, 2), axis=1))
+                
+                if error1 <= error2:
+                    rvec, tvec = rvec1, tvec1
+                    self.log(f"采用方法: IPPE_SQUARE (误差: {error1:.4f} px)")
+                    success = success1
+                    use_ippe = True
+                else:
+                    rvec, tvec = rvec2, tvec2
+                    self.log(f"采用方法: 5点迭代 (误差: {error2:.4f} px)")
+                    success = success2
+                    use_ippe = False
+            elif success1:
+                rvec, tvec = rvec1, tvec1
+                success = success1
+                use_ippe = True
+                self.log(f"采用方法: IPPE_SQUARE")
+            elif success2:
+                rvec, tvec = rvec2, tvec2
+                success = success2
+                use_ippe = False
+                self.log(f"采用方法: 5点迭代")
+            else:
+                success = False
+            
+            if success:            
                 # Levenberg-Marquardt 非线性优化
-                rvec_refine, tvec_refine = cv2.solvePnPRefineLM(
-                    obj_points, img_points_refined, current_matrix, self.dist_coeffs,
-                    rvec, tvec  # 传入初始值进行优化
-                )
+                # 使用对应的点集进行优化
+                if use_ippe:
+                    rvec_refine, tvec_refine = cv2.solvePnPRefineLM(
+                        obj_points_4, img_points_4_refined, current_matrix, self.dist_coeffs,
+                        rvec, tvec
+                    )
+                else:
+                    rvec_refine, tvec_refine = cv2.solvePnPRefineLM(
+                        obj_points, img_points_refined, current_matrix, self.dist_coeffs,
+                        rvec, tvec
+                    )
                 
+                # 为了绘图，总是使用5个点
+                img_points_for_draw = img_points_refined
+                
+                # --- 计算欧拉角 (旋转角度) ---
                 dist_mm = np.linalg.norm(tvec_refine)
-                
-                # --- 计算欧拉角 ---
-                rmat, _ = cv2.Rodrigues(rvec_refine)
+                rmat, _ = cv2.Rodrigues(rvec_refine)             
                 sy = math.sqrt(rmat[0,0] * rmat[0,0] +  rmat[1,0] * rmat[1,0])
                 singular = sy < 1e-6
-
+                
                 if not singular:
                     x = math.atan2(rmat[2,1], rmat[2,2])
                     y = math.atan2(-rmat[2,0], sy)
@@ -271,14 +335,25 @@ class VerificationApp:
                 ry = math.degrees(y)
                 rz = math.degrees(z)
                 
+                # 计算最终重投影误差
+                if use_ippe:
+                    final_reproj, _ = cv2.projectPoints(obj_points_4, rvec_refine, tvec_refine, 
+                                                       current_matrix, self.dist_coeffs)
+                    final_error = np.mean(np.linalg.norm(img_points_4_refined - final_reproj.reshape(-1, 2), axis=1))
+                else:
+                    final_reproj, _ = cv2.projectPoints(obj_points, rvec_refine, tvec_refine, 
+                                                       current_matrix, self.dist_coeffs)
+                    final_error = np.mean(np.linalg.norm(img_points_refined - final_reproj.reshape(-1, 2), axis=1))
+                
                 # 绘制结果（传入5个优化后的点）
-                self._draw_overlay(img_temp, img_points_refined, rvec_refine, tvec_refine, 
-                                  dist_mm, (rx, ry, rz), i, current_matrix, obj_points)
+                self._draw_overlay(img_temp, img_points_for_draw, rvec_refine, tvec_refine, 
+                                  dist_mm, (rx, ry, rz), i, current_matrix)
                 
                 # 详细日志
                 self.log(f"计算距离: {dist_mm:.2f} mm")
                 self.log(f"旋转角度 (欧拉角): Rx={rx:.2f}°, Ry={ry:.2f}°, Rz={rz:.2f}°")
                 self.log(f"平移 (X,Y,Z): {tvec_refine[0][0]:.2f}, {tvec_refine[1][0]:.2f}, {tvec_refine[2][0]:.2f}")
+                self.log(f"最终重投影误差: {final_error:.4f} 像素")
                 
             else:
                 self.log(f"QR #{i+1} PnP解算失败")
@@ -286,7 +361,7 @@ class VerificationApp:
         self.current_cv_img = img_temp
         self.display_image()
 
-    def _draw_overlay(self, img, pts, rvec, tvec, dist, angles, idx, camera_mtx, obj_points):
+    def _draw_overlay(self, img, pts, rvec, tvec, dist, angles, idx, camera_mtx):
         pts = pts.astype(np.int32)
         rx, ry, rz = angles
         
@@ -321,16 +396,7 @@ class VerificationApp:
         cv2.line(img, origin, tuple(imgpts[2].ravel()), (0, 255, 0), 3) # Y - 绿色
         cv2.line(img, origin, tuple(imgpts[3].ravel()), (255, 0, 0), 3) # Z - 蓝色
         
-        # 4. 重投影验证（Yellow Circles）- 现在包含5个点
-        if self.check_reproject.get():
-            reproj_pts, _ = cv2.projectPoints(obj_points, rvec, tvec, camera_mtx, self.dist_coeffs)
-            reproj_pts = reproj_pts.reshape(-1, 2).astype(np.int32)
-            for k, pt in enumerate(reproj_pts):
-                # 画空心黄圈，套在红色/紫色实心点外面
-                radius = 10 if k == 4 else 8  # 中心点用更大的圈
-                cv2.circle(img, tuple(pt), radius, (0, 255, 255), 2)
-        
-        # 5. 显示文字（使用中心点的位置）
+        # 4. 显示文字（使用中心点的位置）
         center_x = center_pt[0]
         center_y = center_pt[1]
         
