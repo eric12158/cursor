@@ -1,0 +1,14 @@
+[
+    {
+        "img_path": "images/img_0.jpg",
+        "robot_pose": [100.0, 200.0, 300.0, 180.0, 0.0, 0.0]
+    },
+    {
+        "img_path": "images/img_1.jpg",
+        "robot_pose": [110.0, 210.0, 300.0, 175.0, 5.0, 0.0]
+    },
+    {
+        "img_path": "images/img_2.jpg",
+        "robot_pose": [120.0, 190.0, 300.0, 185.0, -5.0, 0.0]
+    }
+]

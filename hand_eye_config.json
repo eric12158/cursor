@@ -1,0 +1,23 @@
+{
+    "calibration": {
+        "rows": 11,
+        "cols": 8,
+        "spacing": 15.0,
+        "type": "chessboard",
+        "comment": "rows/cols for chessboard usually means number of squares. The script will use (cols-1, rows-1) for inner corners. For circles, it uses (cols, rows)."
+    },
+    "camera_intrinsics": {
+        "fx": 2423.08,
+        "fy": 2423.08,
+        "cx": 1224.5,
+        "cy": 1024.5,
+        "k1": -0.1,
+        "k2": 0.1,
+        "p1": 0.0,
+        "p2": 0.0,
+        "k3": 0.0
+    },
+    "paths": {
+        "data_file": "calibration_data.json"
+    }
+}
