@@ -1,0 +1,16 @@
+{
+    "camera": {
+        "fx": 1362.8,
+        "fy": 1362.4,
+        "cx": 651.9,
+        "cy": 473.1,
+        "dist": [-0.103, 0.124, 0.0, 0.0, 0.0]
+    },
+    "calibration": {
+        "type": "circles",
+        "rows": 7,
+        "cols": 7,
+        "spacing": 15.0
+    },
+    "robot_pose_angle_unit": "deg"
+}
