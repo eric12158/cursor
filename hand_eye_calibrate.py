@@ -951,13 +951,18 @@ class HandEyeCalibrationApp:
                 T_all_board_to_cam.append(tvec)
                 
                 # 计算末端到基座的变换矩阵
-                RT = pose_to_transform_matrix(
+                # 【关键】机械臂返回的是 T_base_to_gripper（基座→末端）
+                # 但 calibrateHandEye 需要 T_gripper_to_base（末端→基座）
+                # 所以需要取逆！
+                RT_base_to_gripper = pose_to_transform_matrix(
                     pose[0], pose[1], pose[2],
                     pose[3], pose[4], pose[5],
                     self.config
                 )
-                R_all_end_to_base.append(RT[:3, :3])
-                T_all_end_to_base.append(RT[:3, 3].reshape((3, 1)))
+                # 取逆得到 T_gripper_to_base
+                RT_gripper_to_base = np.linalg.inv(RT_base_to_gripper)
+                R_all_end_to_base.append(RT_gripper_to_base[:3, :3])
+                T_all_end_to_base.append(RT_gripper_to_base[:3, 3].reshape((3, 1)))
             
             if len(R_all_board_to_cam) < 3:
                 messagebox.showerror("错误", "有效数据不足")
@@ -1029,13 +1034,19 @@ class HandEyeCalibrationApp:
             
             positions = []
             for i in range(len(R_all_board_to_cam)):
-                RT_end_to_base = np.column_stack((R_all_end_to_base[i], T_all_end_to_base[i]))
-                RT_end_to_base = np.vstack((RT_end_to_base, [[0, 0, 0, 1]]))
+                # R_all_end_to_base 实际是 T_gripper_to_base（已取逆）
+                # 需要再取逆回来得到 T_base_to_gripper
+                RT_gripper_to_base = np.column_stack((R_all_end_to_base[i], T_all_end_to_base[i]))
+                RT_gripper_to_base = np.vstack((RT_gripper_to_base, [[0, 0, 0, 1]]))
+                RT_base_to_gripper = np.linalg.inv(RT_gripper_to_base)
                 
                 RT_board_to_cam = np.column_stack((R_all_board_to_cam[i], T_all_board_to_cam[i]))
                 RT_board_to_cam = np.vstack((RT_board_to_cam, [[0, 0, 0, 1]]))
                 
-                RT_board_to_base = RT_end_to_base @ RT_cam2end @ RT_board_to_cam
+                # T_base_to_board = T_base_to_gripper @ T_gripper_to_cam @ T_cam_to_board
+                # T_gripper_to_cam = inv(T_cam_to_gripper) = inv(RT_cam2end)
+                RT_gripper_to_cam = np.linalg.inv(RT_cam2end)
+                RT_board_to_base = RT_base_to_gripper @ RT_gripper_to_cam @ RT_board_to_cam
                 RT_base_to_board = np.linalg.inv(RT_board_to_base)
                 
                 positions.append(RT_base_to_board[:3, 3])
