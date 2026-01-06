@@ -1,0 +1,35 @@
+{
+  "camera": {
+    "K": [
+      [1000.0, 0.0, 640.0],
+      [0.0, 1000.0, 360.0],
+      [0.0, 0.0, 1.0]
+    ],
+    "dist": [0.0, 0.0, 0.0, 0.0, 0.0]
+  },
+  "target": {
+    "type": "circles",
+    "rows": 7,
+    "cols": 7,
+    "spacing_mm": 12.5
+  },
+  "dataset": {
+    "images_dir": "./images",
+    "image_glob": "*.jpg",
+    "poses_file": "./images/pos.txt",
+    "poses_format": "txt_list",
+    "pairing": "sorted"
+  },
+  "robot_pose": {
+    "pose_is": "base_to_gripper",
+    "rotation_unit": "deg",
+    "euler_order": "xyz"
+  },
+  "hand_eye": {
+    "method": "TSAI"
+  },
+  "output": {
+    "cam2end_txt": "cam2end.txt"
+  }
+}
+
