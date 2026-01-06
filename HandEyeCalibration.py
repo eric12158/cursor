@@ -260,6 +260,9 @@ class HandEyeApp:
         self.curr_frame = None
         self.lock = threading.Lock()
         
+        # 控制采集状态：False=实时预览(采集), True=暂停(拍照后停止)
+        self.is_preview_frozen = False
+        
         self.robot_client = None
         
         # --- UI 初始化 ---
@@ -467,18 +470,26 @@ class HandEyeApp:
         f_left = tk.Frame(paned, width=300, bg="#f5f5f5")
         paned.add(f_left)
         
-        tk.Button(f_left, text="启动相机预览", command=self.start_camera_preview).pack(fill=tk.X, padx=5, pady=5)
+        # 按钮组
+        btn_frame = tk.LabelFrame(f_left, text="采集控制", bg="#f5f5f5", font=("bold", 10))
+        btn_frame.pack(fill=tk.X, padx=5, pady=10)
         
-        tk.Label(f_left, text="当前机械臂坐标:", bg="#f5f5f5").pack(anchor="w", padx=5)
+        # 采集按钮 (Resume)
+        self.btn_collect = tk.Button(btn_frame, text="▶ 开始采集/预览", command=self.click_collect, height=2, bg="#e1f5fe")
+        self.btn_collect.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 拍照按钮 (Freeze & Save)
+        self.btn_snap = tk.Button(btn_frame, text="📸 拍照 (停止采集)", command=self.click_snap, height=2, bg="#c8e6c9")
+        self.btn_snap.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 辅助功能
+        tk.Button(f_left, text="仅测试获取坐标", command=self.req_robot_pose).pack(fill=tk.X, padx=5, pady=5)
+        tk.Button(f_left, text="从文件夹导入图片", command=self.import_images).pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Label(f_left, text="当前机械臂坐标:", bg="#f5f5f5").pack(anchor="w", padx=5, pady=(20,0))
         self.lbl_curr_pose = tk.Label(f_left, text="未知", fg="blue", bg="white", relief="sunken", height=2)
         self.lbl_curr_pose.pack(fill=tk.X, padx=5)
-        
-        tk.Button(f_left, text="发送指令获取坐标", command=self.req_robot_pose).pack(fill=tk.X, padx=5, pady=2)
-        
-        tk.Label(f_left, text="采集操作:", bg="#f5f5f5", font=("bold", 10)).pack(anchor="w", padx=5, pady=10)
-        tk.Button(f_left, text="📸 拍照并保存(自动获取坐标)", command=self.capture_and_save, height=2, bg="#c8e6c9").pack(fill=tk.X, padx=5, pady=5)
-        tk.Button(f_left, text="从文件夹导入图片", command=self.import_images).pack(fill=tk.X, padx=5, pady=5)
-        
+
         # 右侧预览
         self.canvas_frame = tk.Frame(paned, bg="black")
         paned.add(self.canvas_frame)
@@ -596,8 +607,8 @@ class HandEyeApp:
         else:
             messagebox.showerror("失败", f"通信失败: {res}")
 
-    def start_camera_preview(self):
-        if self.cam_running: return
+    def init_camera(self):
+        if self.cam_running: return True
         self.update_config_from_ui()
         try:
             if self.cfg["camera"]["type"] == "sdk":
@@ -609,8 +620,10 @@ class HandEyeApp:
             self.cam_running = True
             threading.Thread(target=self.loop_cam, daemon=True).start()
             self.lbl_status_cam.config(text="相机: 运行中", fg="green")
+            return True
         except Exception as e:
-            messagebox.showerror("错误", str(e))
+            messagebox.showerror("错误", f"无法启动相机: {e}")
+            return False
 
     def loop_cam(self):
         while self.cam_running:
@@ -625,17 +638,18 @@ class HandEyeApp:
                         with self.lock:
                             self.curr_frame = frame.copy()
                         
-                        # 显示
-                        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        h, w = img_rgb.shape[:2]
-                        cw = self.canvas.winfo_width()
-                        ch = self.canvas.winfo_height()
-                        if cw>10 and ch>10:
-                            s = min(cw/w, ch/h)
-                            nw, nh = int(w*s), int(h*s)
-                            img_rs = cv2.resize(img_rgb, (nw, nh))
-                            self.tk_img = ImageTk.PhotoImage(image=Image.fromarray(img_rs))
-                            self.root.after(0, lambda: self.canvas.create_image(cw//2, ch//2, image=self.tk_img, anchor=tk.CENTER))
+                        # 仅在未冻结时刷新界面
+                        if not self.is_preview_frozen:
+                            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            h, w = img_rgb.shape[:2]
+                            cw = self.canvas.winfo_width()
+                            ch = self.canvas.winfo_height()
+                            if cw>10 and ch>10:
+                                s = min(cw/w, ch/h)
+                                nw, nh = int(w*s), int(h*s)
+                                img_rs = cv2.resize(img_rgb, (nw, nh))
+                                self.tk_img = ImageTk.PhotoImage(image=Image.fromarray(img_rs))
+                                self.root.after(0, lambda: self.canvas.create_image(cw//2, ch//2, image=self.tk_img, anchor=tk.CENTER))
             except: pass
             time.sleep(0.03)
 
@@ -654,12 +668,40 @@ class HandEyeApp:
             self.log(f"获取坐标失败: {res}")
         return None
 
+    # --- 新增：按钮逻辑 ---
+    def click_collect(self):
+        """点击开始/继续采集"""
+        if not self.cam_running:
+            if not self.init_camera(): return
+
+        self.is_preview_frozen = False
+        self.btn_collect.config(text="✔ 采集/预览进行中", bg="#81c784", state="disabled")
+        self.btn_snap.config(text="📸 拍照 (停止采集)", bg="#e1f5fe", state="normal")
+        self.log("恢复实时预览")
+
+    def click_snap(self):
+        """点击拍照：停止采集 -> 保存"""
+        if not self.cam_running:
+            messagebox.showwarning("提示", "相机未运行")
+            return
+
+        # 1. 冻结画面
+        self.is_preview_frozen = True
+        
+        # 2. 更新按钮状态
+        self.btn_collect.config(text="▶ 点击继续采集", bg="#ffcc80", state="normal")
+        self.btn_snap.config(text="已拍照", bg="#eeeeee", state="disabled")
+        
+        # 3. 执行拍照保存逻辑
+        self.capture_and_save()
+        self.log("画面已定格，等待继续采集")
+
     def capture_and_save(self):
         with self.lock:
             frame = self.curr_frame.copy() if self.curr_frame is not None else None
         
         if frame is None:
-            messagebox.showwarning("无图像", "请先启动相机预览")
+            messagebox.showwarning("无图像", "未获取到图像")
             return
             
         # 自动尝试获取坐标
@@ -683,17 +725,24 @@ class HandEyeApp:
         self.save_data()
         self.refresh_tree()
         
-        # 视觉反馈
+        # 视觉反馈 (在Canvas上绘制一下角点，让用户知道拍到了)
         if corners is not None:
             vis = frame.copy()
             c = self.cfg["board"]
             pattern = (c["cols"]-1, c["rows"]-1) if c["type"]=="chessboard" else (c["cols"], c["rows"])
             cv2.drawChessboardCorners(vis, pattern, corners, True)
-            try:
-                cv2.imshow("Capture Check", cv2.resize(vis, (640, 480)))
-                cv2.waitKey(500)
-                cv2.destroyWindow("Capture Check")
-            except: pass
+            
+            # 临时显示带角点的图到Canvas，虽然现在frozen了，但我们可以手动更新一次Canvas显示结果图
+            img_rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+            h, w = img_rgb.shape[:2]
+            cw = self.canvas.winfo_width()
+            ch = self.canvas.winfo_height()
+            if cw>10 and ch>10:
+                s = min(cw/w, ch/h)
+                nw, nh = int(w*s), int(h*s)
+                img_rs = cv2.resize(img_rgb, (nw, nh))
+                self.tk_img = ImageTk.PhotoImage(image=Image.fromarray(img_rs))
+                self.canvas.create_image(cw//2, ch//2, image=self.tk_img, anchor=tk.CENTER)
 
     def detect_corners(self, img):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -828,12 +877,7 @@ class HandEyeApp:
             R_t2c.append(rmat)
             t_t2c.append(tvec)
             
-            # 2. Gripper to Base (Wait, input is Base to Gripper)
-            # OpenCV calibrateHandEye (TSAI) expects Base -> Gripper if setup is Eye-in-Hand?
-            # NO. The function signature is R_gripper2base. This means the transformation FROM gripper frame TO base frame.
-            # Which is exactly what the robot controller usually reports (Base -> Flange/Gripper).
-            # So we use pose directly.
-            
+            # 2. Gripper to Base
             p = d["robot_pose"]
             RT_b2g = AlgorithmUtils.pose_to_homogeneous(p[0], p[1], p[2], p[3], p[4], p[5], self.cfg["robot"]["angle_unit"])
             R_g2b.append(RT_b2g[:3, :3])
@@ -855,7 +899,6 @@ class HandEyeApp:
             # 验证
             self.txt_res.insert(tk.END, "--- 验证结果 (标定板在基座下坐标一致性) ---\n")
             for i, d in enumerate(valid):
-                # Chain: Base <- End <- Cam <- Target
                 RT_t2c_mat = np.eye(4)
                 RT_t2c_mat[:3,:3] = R_t2c[i]
                 RT_t2c_mat[:3,3] = t_t2c[i].flatten()
