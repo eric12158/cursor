@@ -852,7 +852,17 @@ class HandEyeApp:
     def import_images(self):
         d = filedialog.askdirectory()
         if not d: return
-        files = glob.glob(os.path.join(d, "*.jpg")) + glob.glob(os.path.join(d, "*.png"))
+        
+        # 支持多种格式，忽略大小写
+        exts = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tif', '*.tiff']
+        files = []
+        for ext in exts:
+            files.extend(glob.glob(os.path.join(d, ext)))
+            files.extend(glob.glob(os.path.join(d, ext.upper())))
+        
+        # 去重并排序
+        files = sorted(list(set(files)))
+        
         cnt = 0
         for f in files:
             img = cv2.imread(f)
