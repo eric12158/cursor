@@ -54,7 +54,35 @@ class HikCameraWrapper:
         self.is_opened = False
         self.data_buf = None
         self.n_payload_size = 0
+    
+    @staticmethod
+    def scan_devices():
+        """扫描所有连接的 GigE 相机"""
+        if not HAS_HIK_SDK: return []
         
+        deviceList = MV_CC_DEVICE_INFO_LIST()
+        # 枚举 GigE 设备
+        ret = MvCamera.MV_CC_EnumDevices(MV_GIGE_DEVICE, deviceList)
+        
+        devices = []
+        if ret == 0:
+            for i in range(deviceList.nDeviceNum):
+                mvcc_dev_info = ctypes.cast(deviceList.pDeviceInfo[i], ctypes.POINTER(MV_CC_DEVICE_INFO)).contents
+                if mvcc_dev_info.nTLayerType == MV_GIGE_DEVICE:
+                    # 获取 IP 地址
+                    nip = mvcc_dev_info.SpecialInfo.stGigEInfo.nCurrentIp
+                    str_ip = f"{(nip >> 24) & 0xff}.{(nip >> 16) & 0xff}.{(nip >> 8) & 0xff}.{nip & 0xff}"
+                    
+                    # 获取型号 (ModelName)
+                    # UserDefinedName 也可以用，这里用 ModelName
+                    # model_name = ""
+                    # for j in mvcc_dev_info.SpecialInfo.stGigEInfo.chModelName:
+                    #     if j == 0: break
+                    #     model_name += chr(j)
+                        
+                    devices.append(str_ip)
+        return devices
+
     def open_by_ip(self, ip):
         if not HAS_HIK_SDK: raise Exception("未检测到海康 SDK 环境，请安装 MVS 并确保 python 能够调用")
         
@@ -245,7 +273,7 @@ class RobotClient:
 class HandEyeApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("手眼标定专家版 v3.0 (集成TCP指令)")
+        self.root.title("手眼标定专家版 v3.1 (支持IP扫描)")
         self.root.geometry("1300x900")
         
         # --- 全局变量 ---
@@ -276,7 +304,7 @@ class HandEyeApp:
     def load_config(self):
         default = {
             "camera": {
-                "type": "opencv", "ip": "192.168.1.64", "index": 0,
+                "type": "opencv", "ip": "", "index": 0,
                 "fx": 1000.0, "fy": 1000.0, "cx": 640.0, "cy": 360.0,
                 "dist": [0.0]*5
             },
@@ -389,14 +417,20 @@ class HandEyeApp:
         ttk.Combobox(lf_cam, textvariable=self.var_cam_type, values=["opencv", "sdk"]).grid(row=0, column=1)
         
         tk.Label(lf_cam, text="海康IP:").grid(row=1, column=0, sticky="e", pady=5)
+        
+        # IP 输入框改为 Combobox 方便扫描选择
         self.var_cam_ip = tk.StringVar()
-        tk.Entry(lf_cam, textvariable=self.var_cam_ip).grid(row=1, column=1)
+        self.cb_cam_ip = ttk.Combobox(lf_cam, textvariable=self.var_cam_ip, width=18)
+        self.cb_cam_ip.grid(row=1, column=1, sticky="w")
+        
+        # 扫描按钮
+        tk.Button(lf_cam, text="扫描", command=self.scan_hik_cameras, width=5).grid(row=1, column=2, padx=5)
         
         tk.Label(lf_cam, text="USB索引:").grid(row=2, column=0, sticky="e", pady=5)
         self.var_cam_idx = tk.IntVar(value=0)
         tk.Entry(lf_cam, textvariable=self.var_cam_idx).grid(row=2, column=1)
         
-        tk.Button(lf_cam, text="测试打开相机", command=self.test_camera_open, bg="#e1f5fe").grid(row=3, column=0, columnspan=2, pady=10, sticky="ew")
+        tk.Button(lf_cam, text="测试打开相机", command=self.test_camera_open, bg="#e1f5fe").grid(row=3, column=0, columnspan=3, pady=10, sticky="ew")
 
         # 右：机械臂设置
         lf_rob = tk.LabelFrame(f, text="机械臂通讯设置 (TCP Client)", width=400)
@@ -581,6 +615,23 @@ class HandEyeApp:
                 "cmd": self.var_rob_cmd.get()
             }
         }
+
+    def scan_hik_cameras(self):
+        """扫描并填充 IP 列表"""
+        self.log("正在扫描 GigE 设备...")
+        try:
+            ips = HikCameraWrapper.scan_devices()
+            if ips:
+                self.cb_cam_ip['values'] = ips
+                self.cb_cam_ip.current(0)
+                self.log(f"发现 {len(ips)} 个设备: {ips}")
+                messagebox.showinfo("扫描成功", f"发现 {len(ips)} 个设备，已自动选择第一个。")
+            else:
+                self.log("未发现设备")
+                messagebox.showwarning("提示", "未扫描到海康 GigE 相机")
+        except Exception as e:
+            self.log(f"扫描异常: {e}")
+            messagebox.showerror("错误", str(e))
 
     # --- 硬件控制 ---
     def test_camera_open(self):
