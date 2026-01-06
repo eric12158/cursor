@@ -1,0 +1,27 @@
+{
+    "camera_intrinsics": {
+        "fx": 2500.0,
+        "fy": 2500.0,
+        "cx": 1280.0,
+        "cy": 960.0,
+        "k1": 0.0,
+        "k2": 0.0,
+        "p1": 0.0,
+        "p2": 0.0,
+        "k3": 0.0
+    },
+    "calibration_board": {
+        "type": "circles",
+        "rows": 7,
+        "cols": 7,
+        "spacing": 15.0
+    },
+    "data_source": {
+        "images_dir": "./images",
+        "poses_file": "./images/pos.txt",
+        "image_extension": "jpg"
+    },
+    "output": {
+        "result_file": "cam2end.txt"
+    }
+}
