@@ -18,14 +18,18 @@
         "cols": 6,
         "spacing": 25.0
     },
+    "robot_net": {
+        "robot_ip": "192.168.1.100",
+        "robot_port": 8080,
+        "timeout": 2.0
+    },
     "paths": {
         "image_dir": "./calibration_images",
-        "robot_pose_file": "./calibration_images/robot_poses.txt",
         "output_dir": "./calibration_results"
     },
     "robot_config": {
         "euler_order": "xyz",
-        "angle_unit": "radians",
+        "angle_unit": "degrees",
         "pose_format": "x,y,z,rx,ry,rz"
     },
     "hand_eye_method": "TSAI"

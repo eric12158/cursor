@@ -1,33 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 '''
-手眼标定程序 (Hand-Eye Calibration)
+手眼标定程序 (Hand-Eye Calibration) - GUI版
 
 功能说明:
     1. 支持JSON配置文件输入相机内参和畸变系数
     2. 支持棋盘格(chessboard)和圆点(circles)两种标定板类型
-    3. 从指定目录自动加载图片进行标定板检测
-    4. 从文本文件读取对应的机械臂末端位姿
+    3. 从指定目录加载图片，自动检测标定板
+    4. 支持通过TCP发送tcp_pose命令获取机械臂位姿
     5. 使用OpenCV calibrateHandEye进行手眼标定
     6. 输出完整的手眼标定矩阵和验证结果
 
 使用方法:
-    1. 准备配置文件 calibration_config.json（首次运行会自动生成默认配置）
-    2. 准备标定图片，放入配置中指定的目录（默认：./calibration_images/）
-    3. 准备机械臂位姿文件（默认：./calibration_images/robot_poses.txt）
-       格式：每行 x,y,z,rx,ry,rz（单位：mm和弧度）
-    4. 运行程序：python hand_eye_calibrate.py
-
-配置文件说明:
-    - camera_intrinsics: 相机内参 (fx, fy, cx, cy)
-    - distortion_coeffs: 畸变系数 (k1, k2, p1, p2, k3)
-    - calibration_board: 标定板参数 (类型、行列数、间距)
-    - paths: 图片目录和位姿文件路径
-    - euler_order: 机械臂欧拉角顺序 (如 "xyz", "zyx" 等)
-    - angle_unit: 机械臂角度单位 ("radians" 或 "degrees")
+    1. 运行程序：python hand_eye_calibrate.py
+    2. 在配置页面设置相机内参、机械臂IP/端口、标定板参数
+    3. 点击"从文件夹加载图片"加载标定图片
+    4. 选中每行数据，点击"获取机械臂位姿"发送tcp_pose命令
+    5. 所有数据就绪后，点击"计算手眼标定"
 
 作者: 基于原始MATLAB标定版本重构
-版本: 2.0 (配置文件驱动版)
+版本: 3.0 (GUI版 + TCP位姿获取)
 日期: 2024
 '''
 
@@ -35,6 +27,10 @@ import os
 import sys
 import json
 import glob
+import socket
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 import cv2
 import numpy as np
 from math import sin, cos, pi
@@ -43,66 +39,63 @@ from math import sin, cos, pi
 # 配置文件管理
 # =============================================================================
 
-# 默认配置模板
 DEFAULT_CONFIG = {
     "camera_intrinsics": {
-        "fx": 1000.0,           # 焦距x (像素)
-        "fy": 1000.0,           # 焦距y (像素)
-        "cx": 640.0,            # 主点x (像素)
-        "cy": 480.0             # 主点y (像素)
+        "fx": 1000.0,
+        "fy": 1000.0,
+        "cx": 640.0,
+        "cy": 480.0
     },
     "distortion_coeffs": {
-        "k1": 0.0,              # 径向畸变系数1
-        "k2": 0.0,              # 径向畸变系数2
-        "p1": 0.0,              # 切向畸变系数1
-        "p2": 0.0,              # 切向畸变系数2
-        "k3": 0.0               # 径向畸变系数3
+        "k1": 0.0,
+        "k2": 0.0,
+        "p1": 0.0,
+        "p2": 0.0,
+        "k3": 0.0
     },
     "calibration_board": {
-        "type": "chessboard",   # 标定板类型: "chessboard" (棋盘格) 或 "circles" (圆点)
-        "rows": 9,              # 行数（棋盘格：行方向角点数，圆点：行方向圆点数）
-        "cols": 6,              # 列数（棋盘格：列方向角点数，圆点：列方向圆点数）
-        "spacing": 25.0         # 间距 (mm)：棋盘格为方格边长，圆点为圆心间距
+        "type": "chessboard",
+        "rows": 9,
+        "cols": 6,
+        "spacing": 25.0
+    },
+    "robot_net": {
+        "robot_ip": "192.168.1.100",
+        "robot_port": 8080,
+        "timeout": 2.0
     },
     "paths": {
-        "image_dir": "./calibration_images",      # 标定图片目录
-        "robot_pose_file": "./calibration_images/robot_poses.txt",  # 机械臂位姿文件
-        "output_dir": "./calibration_results"     # 输出结果目录
+        "image_dir": "./calibration_images",
+        "output_dir": "./calibration_results"
     },
     "robot_config": {
-        "euler_order": "xyz",   # 机械臂欧拉角顺序: "xyz", "zyx", "zyz" 等
-        "angle_unit": "radians", # 角度单位: "radians" (弧度) 或 "degrees" (度)
-        "pose_format": "x,y,z,rx,ry,rz"  # 位姿格式说明
+        "euler_order": "xyz",
+        "angle_unit": "degrees",
+        "pose_format": "x,y,z,rx,ry,rz"
     },
-    "hand_eye_method": "TSAI"   # 手眼标定方法: "TSAI", "PARK", "HORAUD", "ANDREFF", "DANIILIDIS"
+    "hand_eye_method": "TSAI"
 }
 
 CONFIG_FILE = "calibration_config.json"
+CALIB_DATA_FILE = "calibration_data.json"
 
 
 def load_config(config_path=CONFIG_FILE):
-    """加载配置文件，如果不存在则创建默认配置"""
+    """加载配置文件"""
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 user_config = json.load(f)
-            # 递归合并配置，补全缺失字段
             config = merge_config(DEFAULT_CONFIG, user_config)
-            print(f"[配置] 成功加载配置文件: {config_path}")
             return config
         except Exception as e:
-            print(f"[警告] 加载配置文件失败: {e}，使用默认配置")
+            print(f"[警告] 加载配置失败: {e}")
             return DEFAULT_CONFIG.copy()
-    else:
-        # 创建默认配置文件
-        save_config(DEFAULT_CONFIG, config_path)
-        print(f"[配置] 已创建默认配置文件: {config_path}")
-        print(f"[提示] 请根据实际情况修改配置文件后重新运行程序")
-        return DEFAULT_CONFIG.copy()
+    return DEFAULT_CONFIG.copy()
 
 
 def merge_config(default, user):
-    """递归合并配置，用户配置优先，缺失字段使用默认值"""
+    """递归合并配置"""
     result = default.copy()
     for key, value in user.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
@@ -116,29 +109,6 @@ def save_config(config, config_path=CONFIG_FILE):
     """保存配置文件"""
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
-    print(f"[配置] 配置已保存到: {config_path}")
-
-
-# =============================================================================
-# 相机内参和畸变系数处理
-# =============================================================================
-
-def get_camera_matrix(config):
-    """从配置中构建相机内参矩阵"""
-    intrinsics = config["camera_intrinsics"]
-    K = np.array([
-        [intrinsics["fx"], 0, intrinsics["cx"]],
-        [0, intrinsics["fy"], intrinsics["cy"]],
-        [0, 0, 1]
-    ], dtype=np.float64)
-    return K
-
-
-def get_distortion_coeffs(config):
-    """从配置中获取畸变系数"""
-    dist = config["distortion_coeffs"]
-    D = np.array([dist["k1"], dist["k2"], dist["p1"], dist["p2"], dist["k3"]], dtype=np.float64)
-    return D
 
 
 # =============================================================================
@@ -146,44 +116,28 @@ def get_distortion_coeffs(config):
 # =============================================================================
 
 def detect_calibration_board(image, config):
-    """
-    检测标定板角点/圆心
-    
-    参数:
-        image: BGR图像
-        config: 配置字典
-    
-    返回:
-        success: 是否成功检测
-        corners: 角点/圆心坐标 (N, 1, 2) 或 None
-    """
+    """检测标定板角点/圆心"""
     board_config = config["calibration_board"]
     board_type = board_config["type"]
     rows = board_config["rows"]
     cols = board_config["cols"]
     
-    # 转为灰度图
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:
         gray = image.copy()
     
     if board_type == "chessboard":
-        # 棋盘格检测
-        # 注意：OpenCV的findChessboardCorners参数是(cols, rows)
         pattern_size = (cols, rows)
         flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
         success, corners = cv2.findChessboardCorners(gray, pattern_size, flags)
         
         if success:
-            # 亚像素精度优化
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
             corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
             
     elif board_type == "circles":
-        # 圆点标定板检测
         pattern_size = (cols, rows)
-        # 使用SimpleBlobDetector
         params = cv2.SimpleBlobDetector_Params()
         params.minThreshold = 10
         params.maxThreshold = 200
@@ -205,34 +159,24 @@ def detect_calibration_board(image, config):
         )
         
         if not success:
-            # 尝试非对称网格
             success, corners = cv2.findCirclesGrid(
                 gray, pattern_size, None,
                 flags=cv2.CALIB_CB_ASYMMETRIC_GRID,
                 blobDetector=detector
             )
     else:
-        print(f"[错误] 不支持的标定板类型: {board_type}")
         return False, None
     
     return success, corners
 
 
 def get_object_points(config):
-    """
-    生成标定板3D坐标点
-    
-    返回:
-        objp: 3D点坐标 (N, 3)，单位mm
-    """
+    """生成标定板3D坐标点"""
     board_config = config["calibration_board"]
-    board_type = board_config["type"]
     rows = board_config["rows"]
     cols = board_config["cols"]
     spacing = board_config["spacing"]
     
-    # 生成标定板角点的3D坐标
-    # 假设标定板在Z=0平面上
     objp = np.zeros((rows * cols, 3), np.float32)
     objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2) * spacing
     
@@ -240,70 +184,11 @@ def get_object_points(config):
 
 
 # =============================================================================
-# 机械臂位姿处理
+# 欧拉角转换
 # =============================================================================
 
-def read_robot_poses(file_path, config):
-    """
-    读取机械臂末端位姿文件
-    
-    文件格式: 每行 x,y,z,rx,ry,rz (逗号分隔)
-    
-    参数:
-        file_path: 位姿文件路径
-        config: 配置字典
-    
-    返回:
-        poses: 位姿列表 [[x,y,z,rx,ry,rz], ...]
-    """
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"机械臂位姿文件不存在: {file_path}")
-    
-    poses = []
-    with open(file_path, 'r') as f:
-        lines = f.readlines()
-    
-    for line_num, line in enumerate(lines, 1):
-        line = line.strip()
-        if not line or line.startswith('#'):  # 跳过空行和注释
-            continue
-        
-        # 去除方括号
-        line = line.replace('[', '').replace(']', '')
-        
-        try:
-            # 尝试逗号分隔
-            if ',' in line:
-                values = [float(v.strip()) for v in line.split(',')]
-            else:
-                # 尝试空格分隔
-                values = [float(v) for v in line.split()]
-            
-            if len(values) != 6:
-                print(f"[警告] 第{line_num}行数据格式错误，跳过: {line}")
-                continue
-            
-            poses.append(values)
-        except ValueError as e:
-            print(f"[警告] 第{line_num}行解析失败，跳过: {line} ({e})")
-            continue
-    
-    print(f"[位姿] 成功读取 {len(poses)} 组机械臂位姿数据")
-    return poses
-
-
 def euler_to_rotation_matrix(rx, ry, rz, order='xyz'):
-    """
-    欧拉角转旋转矩阵
-    
-    参数:
-        rx, ry, rz: 欧拉角 (弧度)
-        order: 旋转顺序，如 'xyz', 'zyx' 等
-    
-    返回:
-        R: 3x3 旋转矩阵
-    """
-    # 基本旋转矩阵
+    """欧拉角转旋转矩阵"""
     Rx = np.array([
         [1, 0, 0],
         [0, cos(rx), -sin(rx)],
@@ -322,45 +207,30 @@ def euler_to_rotation_matrix(rx, ry, rz, order='xyz'):
         [0, 0, 1]
     ])
     
-    # 根据顺序组合
     rotations = {'x': Rx, 'y': Ry, 'z': Rz}
     order = order.lower()
     
     if len(order) == 3:
         R = rotations[order[2]] @ rotations[order[1]] @ rotations[order[0]]
     else:
-        # 默认xyz顺序: R = Rz @ Ry @ Rx
         R = Rz @ Ry @ Rx
     
     return R
 
 
 def pose_to_transform_matrix(x, y, z, rx, ry, rz, config):
-    """
-    将机械臂位姿转换为4x4齐次变换矩阵
-    
-    参数:
-        x, y, z: 平移 (mm)
-        rx, ry, rz: 欧拉角
-        config: 配置字典
-    
-    返回:
-        T: 4x4 齐次变换矩阵
-    """
+    """将机械臂位姿转换为4x4齐次变换矩阵"""
     robot_config = config["robot_config"]
     euler_order = robot_config.get("euler_order", "xyz")
-    angle_unit = robot_config.get("angle_unit", "radians")
+    angle_unit = robot_config.get("angle_unit", "degrees")
     
-    # 单位转换
     if angle_unit == "degrees":
         rx = rx * pi / 180
         ry = ry * pi / 180
         rz = rz * pi / 180
     
-    # 计算旋转矩阵
     R = euler_to_rotation_matrix(rx, ry, rz, euler_order)
     
-    # 构建4x4齐次变换矩阵
     T = np.eye(4)
     T[:3, :3] = R
     T[:3, 3] = [x, y, z]
@@ -369,42 +239,7 @@ def pose_to_transform_matrix(x, y, z, rx, ry, rz, config):
 
 
 # =============================================================================
-# 图像加载
-# =============================================================================
-
-def load_calibration_images(image_dir):
-    """
-    从目录加载所有标定图片
-    
-    参数:
-        image_dir: 图片目录路径
-    
-    返回:
-        image_files: 图片文件路径列表（按文件名排序）
-    """
-    if not os.path.exists(image_dir):
-        raise FileNotFoundError(f"图片目录不存在: {image_dir}")
-    
-    # 支持的图片格式
-    extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tif', '*.tiff']
-    image_files = []
-    
-    for ext in extensions:
-        image_files.extend(glob.glob(os.path.join(image_dir, ext)))
-        image_files.extend(glob.glob(os.path.join(image_dir, ext.upper())))
-    
-    # 按文件名排序
-    image_files.sort()
-    
-    if not image_files:
-        raise FileNotFoundError(f"未在目录 {image_dir} 中找到图片文件")
-    
-    print(f"[图像] 找到 {len(image_files)} 张标定图片")
-    return image_files
-
-
-# =============================================================================
-# 手眼标定核心算法 (保留原有算法)
+# 手眼标定方法
 # =============================================================================
 
 def get_hand_eye_method(method_name):
@@ -419,341 +254,857 @@ def get_hand_eye_method(method_name):
     return methods.get(method_name.upper(), cv2.CALIB_HAND_EYE_TSAI)
 
 
-def run_hand_eye_calibration(config):
-    """
-    执行手眼标定主流程
-    
-    参数:
-        config: 配置字典
-    
-    返回:
-        R_cam2end: 相机到末端的旋转矩阵 (3x3)
-        T_cam2end: 相机到末端的平移向量 (3x1)
-        RT_cam2end: 相机到末端的变换矩阵 (4x4)
-    """
-    print("\n" + "=" * 60)
-    print("手眼标定程序 (Hand-Eye Calibration)")
-    print("=" * 60)
-    
-    # 获取配置参数
-    K = get_camera_matrix(config)
-    D = get_distortion_coeffs(config)
-    objp = get_object_points(config)
-    
-    print(f"\n[相机内参]")
-    print(f"  fx = {K[0,0]:.2f}")
-    print(f"  fy = {K[1,1]:.2f}")
-    print(f"  cx = {K[0,2]:.2f}")
-    print(f"  cy = {K[1,2]:.2f}")
-    print(f"\n[畸变系数]")
-    print(f"  k1 = {D[0]:.6f}")
-    print(f"  k2 = {D[1]:.6f}")
-    print(f"  p1 = {D[2]:.6f}")
-    print(f"  p2 = {D[3]:.6f}")
-    print(f"  k3 = {D[4]:.6f}")
-    
-    board_config = config["calibration_board"]
-    print(f"\n[标定板配置]")
-    print(f"  类型: {board_config['type']}")
-    print(f"  尺寸: {board_config['rows']} x {board_config['cols']}")
-    print(f"  间距: {board_config['spacing']} mm")
-    
-    # 加载图片
-    image_dir = config["paths"]["image_dir"]
-    image_files = load_calibration_images(image_dir)
-    
-    # 读取机械臂位姿
-    pose_file = config["paths"]["robot_pose_file"]
-    robot_poses = read_robot_poses(pose_file, config)
-    
-    # 检查数据数量匹配
-    if len(image_files) != len(robot_poses):
-        raise ValueError(
-            f"图片数量 ({len(image_files)}) 与机械臂位姿数量 ({len(robot_poses)}) 不匹配！\n"
-            f"请确保每张图片都有对应的机械臂位姿数据。"
-        )
-    
-    # 检测标定板并计算位姿
-    R_all_board_to_cam = []  # 标定板到相机的旋转矩阵
-    T_all_board_to_cam = []  # 标定板到相机的平移向量
-    R_all_end_to_base = []   # 末端到基座的旋转矩阵
-    T_all_end_to_base = []   # 末端到基座的平移向量
-    
-    valid_indices = []
-    
-    print(f"\n[标定板检测]")
-    for i, (img_file, pose) in enumerate(zip(image_files, robot_poses)):
-        img = cv2.imread(img_file)
-        if img is None:
-            print(f"  [{i+1}] 无法读取图片: {os.path.basename(img_file)}")
-            continue
+# =============================================================================
+# GUI主程序
+# =============================================================================
+
+class HandEyeCalibrationApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("手眼标定程序 v3.0 - GUI版")
+        self.root.geometry("1200x800")
         
-        success, corners = detect_calibration_board(img, config)
+        self.config = load_config()
+        self.calib_data_list = []
+        
+        self.load_calib_data()
+        self.setup_ui()
+        
+    def load_calib_data(self):
+        """加载标定数据"""
+        if os.path.exists(CALIB_DATA_FILE):
+            try:
+                with open(CALIB_DATA_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    for d in data:
+                        if 'corners' in d and d['corners'] is not None:
+                            d['corners'] = np.array(d['corners'], dtype=np.float32)
+                    self.calib_data_list = data
+                    print(f"[系统] 已恢复 {len(data)} 条标定数据")
+            except Exception as e:
+                print(f"[警告] 加载标定数据失败: {e}")
+    
+    def save_calib_data(self, show_message=True):
+        """保存标定数据"""
+        serializable_list = []
+        for d in self.calib_data_list:
+            item = d.copy()
+            if 'corners' in item and item['corners'] is not None:
+                item['corners'] = item['corners'].tolist()
+            serializable_list.append(item)
+        
+        try:
+            with open(CALIB_DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump(serializable_list, f, indent=4, ensure_ascii=False)
+            if show_message:
+                self.log(f"已保存 {len(self.calib_data_list)} 条标定数据")
+        except Exception as e:
+            self.log(f"[错误] 保存标定数据失败: {e}")
+    
+    def setup_ui(self):
+        """设置UI界面"""
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 标定数据页面
+        frame_calib = tk.Frame(notebook)
+        notebook.add(frame_calib, text="1. 标定数据采集")
+        self.setup_calib_ui(frame_calib)
+        
+        # 配置页面
+        frame_config = tk.Frame(notebook)
+        notebook.add(frame_config, text="2. 系统配置")
+        self.setup_config_ui(frame_config)
+        
+        # 结果页面
+        frame_result = tk.Frame(notebook)
+        notebook.add(frame_result, text="3. 标定结果")
+        self.setup_result_ui(frame_result)
+    
+    def setup_calib_ui(self, parent):
+        """设置标定数据采集界面"""
+        # 顶部按钮区
+        top_frame = tk.Frame(parent, pady=10)
+        top_frame.pack(fill=tk.X, padx=10)
+        
+        tk.Button(top_frame, text="📁 从文件夹加载图片", command=self.load_images_from_folder,
+                  bg="#4CAF50", fg="white", font=("Arial", 10, "bold"), width=20).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(top_frame, text="📡 获取选中行的机械臂位姿", command=self.get_robot_pose_for_selected,
+                  bg="#2196F3", fg="white", font=("Arial", 10, "bold"), width=25).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(top_frame, text="✎ 手动输入位姿", command=self.manual_input_pose,
+                  bg="#FF9800", fg="white", font=("Arial", 10), width=15).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(top_frame, text="🗑️ 删除选中行", command=self.delete_selected_row,
+                  bg="#f44336", fg="white", font=("Arial", 10), width=12).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(top_frame, text="💾 保存数据", command=lambda: self.save_calib_data(True),
+                  bg="#9C27B0", fg="white", font=("Arial", 10), width=10).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(top_frame, text="▶ 计算手眼标定", command=self.run_hand_eye_calibration,
+                  bg="#FF5722", fg="white", font=("Arial", 11, "bold"), width=15).pack(side=tk.RIGHT, padx=5)
+        
+        # 状态显示
+        status_frame = tk.Frame(parent)
+        status_frame.pack(fill=tk.X, padx=10, pady=5)
+        self.lbl_pose_status = tk.Label(status_frame, text="", fg="blue", font=("Arial", 10))
+        self.lbl_pose_status.pack(side=tk.LEFT)
+        
+        # 数据表格
+        columns = ("id", "img", "x", "y", "z", "rx", "ry", "rz", "status")
+        self.tree_calib = ttk.Treeview(parent, columns=columns, show="headings", height=15)
+        
+        self.tree_calib.heading("id", text="ID")
+        self.tree_calib.column("id", width=40, anchor="center")
+        self.tree_calib.heading("img", text="图片文件名")
+        self.tree_calib.column("img", width=200)
+        
+        for c in ["x", "y", "z", "rx", "ry", "rz"]:
+            self.tree_calib.heading(c, text=c.upper())
+            self.tree_calib.column(c, width=80, anchor="center")
+        
+        self.tree_calib.heading("status", text="状态")
+        self.tree_calib.column("status", width=80, anchor="center")
+        
+        # 滚动条
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=self.tree_calib.yview)
+        self.tree_calib.configure(yscrollcommand=scrollbar.set)
+        
+        self.tree_calib.pack(fill=tk.BOTH, expand=True, padx=10, pady=5, side=tk.LEFT)
+        scrollbar.pack(fill=tk.Y, side=tk.RIGHT, pady=5)
+        
+        self.tree_calib.bind("<Double-1>", self.view_calib_image)
+        
+        # 日志区域
+        log_frame = tk.LabelFrame(parent, text="日志", font=("Arial", 10, "bold"))
+        log_frame.pack(fill=tk.X, padx=10, pady=5, side=tk.BOTTOM)
+        
+        self.txt_log = tk.Text(log_frame, height=6, font=("Consolas", 9))
+        self.txt_log.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 刷新列表
+        self.refresh_calib_list()
+    
+    def setup_config_ui(self, parent):
+        """设置配置界面"""
+        # 相机内参
+        cam_frame = tk.LabelFrame(parent, text="相机内参", font=("Arial", 10, "bold"))
+        cam_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        row = tk.Frame(cam_frame)
+        row.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(row, text="fx:", width=5).pack(side=tk.LEFT)
+        self.var_fx = tk.StringVar(value=str(self.config["camera_intrinsics"]["fx"]))
+        tk.Entry(row, textvariable=self.var_fx, width=12).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="fy:", width=5).pack(side=tk.LEFT)
+        self.var_fy = tk.StringVar(value=str(self.config["camera_intrinsics"]["fy"]))
+        tk.Entry(row, textvariable=self.var_fy, width=12).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="cx:", width=5).pack(side=tk.LEFT)
+        self.var_cx = tk.StringVar(value=str(self.config["camera_intrinsics"]["cx"]))
+        tk.Entry(row, textvariable=self.var_cx, width=12).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="cy:", width=5).pack(side=tk.LEFT)
+        self.var_cy = tk.StringVar(value=str(self.config["camera_intrinsics"]["cy"]))
+        tk.Entry(row, textvariable=self.var_cy, width=12).pack(side=tk.LEFT, padx=5)
+        
+        # 畸变系数
+        dist_frame = tk.LabelFrame(parent, text="畸变系数", font=("Arial", 10, "bold"))
+        dist_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        row = tk.Frame(dist_frame)
+        row.pack(fill=tk.X, padx=10, pady=5)
+        
+        dist_labels = ["k1", "k2", "p1", "p2", "k3"]
+        self.var_dist = {}
+        for lbl in dist_labels:
+            tk.Label(row, text=f"{lbl}:", width=4).pack(side=tk.LEFT)
+            self.var_dist[lbl] = tk.StringVar(value=str(self.config["distortion_coeffs"][lbl]))
+            tk.Entry(row, textvariable=self.var_dist[lbl], width=12).pack(side=tk.LEFT, padx=3)
+        
+        # 机械臂通信
+        robot_frame = tk.LabelFrame(parent, text="机械臂TCP通信", font=("Arial", 10, "bold"))
+        robot_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        row = tk.Frame(robot_frame)
+        row.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(row, text="机械臂IP:", width=10).pack(side=tk.LEFT)
+        self.var_robot_ip = tk.StringVar(value=self.config["robot_net"]["robot_ip"])
+        tk.Entry(row, textvariable=self.var_robot_ip, width=15).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="端口:", width=5).pack(side=tk.LEFT)
+        self.var_robot_port = tk.StringVar(value=str(self.config["robot_net"]["robot_port"]))
+        tk.Entry(row, textvariable=self.var_robot_port, width=8).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="超时(秒):", width=8).pack(side=tk.LEFT)
+        self.var_robot_timeout = tk.StringVar(value=str(self.config["robot_net"]["timeout"]))
+        tk.Entry(row, textvariable=self.var_robot_timeout, width=6).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(row, text="测试连接", command=self.test_robot_connection,
+                  bg="#4CAF50", fg="white").pack(side=tk.LEFT, padx=20)
+        
+        # 标定板参数
+        board_frame = tk.LabelFrame(parent, text="标定板参数", font=("Arial", 10, "bold"))
+        board_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        row = tk.Frame(board_frame)
+        row.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(row, text="类型:", width=5).pack(side=tk.LEFT)
+        self.var_board_type = tk.StringVar(value=self.config["calibration_board"]["type"])
+        ttk.Combobox(row, textvariable=self.var_board_type, values=["chessboard", "circles"], 
+                     width=12, state="readonly").pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="行数:", width=5).pack(side=tk.LEFT)
+        self.var_board_rows = tk.StringVar(value=str(self.config["calibration_board"]["rows"]))
+        tk.Entry(row, textvariable=self.var_board_rows, width=6).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="列数:", width=5).pack(side=tk.LEFT)
+        self.var_board_cols = tk.StringVar(value=str(self.config["calibration_board"]["cols"]))
+        tk.Entry(row, textvariable=self.var_board_cols, width=6).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="间距(mm):", width=9).pack(side=tk.LEFT)
+        self.var_board_spacing = tk.StringVar(value=str(self.config["calibration_board"]["spacing"]))
+        tk.Entry(row, textvariable=self.var_board_spacing, width=8).pack(side=tk.LEFT, padx=5)
+        
+        # 机械臂配置
+        robot_cfg_frame = tk.LabelFrame(parent, text="机械臂位姿配置", font=("Arial", 10, "bold"))
+        robot_cfg_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        row = tk.Frame(robot_cfg_frame)
+        row.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(row, text="欧拉角顺序:", width=10).pack(side=tk.LEFT)
+        self.var_euler_order = tk.StringVar(value=self.config["robot_config"]["euler_order"])
+        ttk.Combobox(row, textvariable=self.var_euler_order, 
+                     values=["xyz", "xzy", "yxz", "yzx", "zxy", "zyx"], 
+                     width=8, state="readonly").pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="角度单位:", width=8).pack(side=tk.LEFT)
+        self.var_angle_unit = tk.StringVar(value=self.config["robot_config"]["angle_unit"])
+        ttk.Combobox(row, textvariable=self.var_angle_unit, 
+                     values=["degrees", "radians"], 
+                     width=10, state="readonly").pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(row, text="标定方法:", width=8).pack(side=tk.LEFT)
+        self.var_method = tk.StringVar(value=self.config["hand_eye_method"])
+        ttk.Combobox(row, textvariable=self.var_method, 
+                     values=["TSAI", "PARK", "HORAUD", "ANDREFF", "DANIILIDIS"], 
+                     width=12, state="readonly").pack(side=tk.LEFT, padx=5)
+        
+        # 保存按钮
+        tk.Button(parent, text="💾 保存配置", command=self.save_config_from_ui,
+                  bg="#2196F3", fg="white", font=("Arial", 11, "bold"), 
+                  width=20, height=2).pack(pady=20)
+    
+    def setup_result_ui(self, parent):
+        """设置结果显示界面"""
+        self.txt_result = tk.Text(parent, font=("Consolas", 10))
+        self.txt_result.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.txt_result.insert(tk.END, "手眼标定结果将在此显示...\n\n")
+        self.txt_result.insert(tk.END, "使用步骤:\n")
+        self.txt_result.insert(tk.END, "1. 在配置页面设置相机内参和机械臂通信参数\n")
+        self.txt_result.insert(tk.END, "2. 点击'从文件夹加载图片'加载标定图片\n")
+        self.txt_result.insert(tk.END, "3. 选中每行数据，点击'获取机械臂位姿'发送tcp_pose命令\n")
+        self.txt_result.insert(tk.END, "4. 确保所有数据的位姿已获取（状态显示'已就绪'）\n")
+        self.txt_result.insert(tk.END, "5. 点击'计算手眼标定'执行标定\n")
+    
+    def log(self, msg):
+        """输出日志"""
+        self.txt_log.insert(tk.END, f"{msg}\n")
+        self.txt_log.see(tk.END)
+        print(msg)
+    
+    def refresh_calib_list(self):
+        """刷新标定数据列表"""
+        for item in self.tree_calib.get_children():
+            self.tree_calib.delete(item)
+        
+        for d in self.calib_data_list:
+            pose = d.get("robot_pose")
+            status = "已就绪" if pose else "待获取"
+            
+            vals = [d["id"], os.path.basename(d["img_path"])]
+            if pose:
+                vals.extend([f"{x:.2f}" for x in pose])
+            else:
+                vals.extend(["-"] * 6)
+            vals.append(status)
+            
+            self.tree_calib.insert("", "end", values=vals)
+    
+    def update_config_from_ui(self):
+        """从UI更新配置"""
+        try:
+            self.config["camera_intrinsics"]["fx"] = float(self.var_fx.get())
+            self.config["camera_intrinsics"]["fy"] = float(self.var_fy.get())
+            self.config["camera_intrinsics"]["cx"] = float(self.var_cx.get())
+            self.config["camera_intrinsics"]["cy"] = float(self.var_cy.get())
+            
+            for key in self.var_dist:
+                self.config["distortion_coeffs"][key] = float(self.var_dist[key].get())
+            
+            self.config["robot_net"]["robot_ip"] = self.var_robot_ip.get()
+            self.config["robot_net"]["robot_port"] = int(self.var_robot_port.get())
+            self.config["robot_net"]["timeout"] = float(self.var_robot_timeout.get())
+            
+            self.config["calibration_board"]["type"] = self.var_board_type.get()
+            self.config["calibration_board"]["rows"] = int(self.var_board_rows.get())
+            self.config["calibration_board"]["cols"] = int(self.var_board_cols.get())
+            self.config["calibration_board"]["spacing"] = float(self.var_board_spacing.get())
+            
+            self.config["robot_config"]["euler_order"] = self.var_euler_order.get()
+            self.config["robot_config"]["angle_unit"] = self.var_angle_unit.get()
+            self.config["hand_eye_method"] = self.var_method.get()
+            
+        except ValueError as e:
+            messagebox.showerror("配置错误", f"请输入有效的数值: {e}")
+            return False
+        return True
+    
+    def save_config_from_ui(self):
+        """保存配置"""
+        if self.update_config_from_ui():
+            save_config(self.config)
+            messagebox.showinfo("成功", "配置已保存")
+            self.log("配置已保存")
+    
+    def load_images_from_folder(self):
+        """从文件夹加载标定图片"""
+        folder_path = filedialog.askdirectory(title="选择包含标定图片的文件夹")
+        if not folder_path:
+            return
+        
+        self.update_config_from_ui()
+        
+        extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
+        image_files = []
+        for ext in extensions:
+            image_files.extend(glob.glob(os.path.join(folder_path, f'*{ext}')))
+            image_files.extend(glob.glob(os.path.join(folder_path, f'*{ext.upper()}')))
+        
+        if not image_files:
+            messagebox.showwarning("警告", "所选文件夹中没有找到图片文件")
+            return
+        
+        image_files.sort()
+        self.log(f"从文件夹加载: {len(image_files)} 张图片")
+        
+        success_count = 0
+        fail_count = 0
+        
+        for img_path in image_files:
+            try:
+                img = cv2.imread(img_path)
+                if img is None:
+                    self.log(f"[跳过] 无法读取: {os.path.basename(img_path)}")
+                    fail_count += 1
+                    continue
+                
+                success, corners = detect_calibration_board(img, self.config)
+                
+                if success:
+                    self.calib_data_list.append({
+                        "id": len(self.calib_data_list) + 1,
+                        "img_path": img_path,
+                        "corners": corners,
+                        "robot_pose": None
+                    })
+                    success_count += 1
+                    self.log(f"[成功] {os.path.basename(img_path)}: 检测到标定板")
+                else:
+                    self.log(f"[失败] {os.path.basename(img_path)}: 未检测到标定板")
+                    fail_count += 1
+                    
+            except Exception as e:
+                self.log(f"[错误] {os.path.basename(img_path)}: {e}")
+                fail_count += 1
+        
+        self.refresh_calib_list()
+        self.save_calib_data(show_message=False)
+        
+        messagebox.showinfo("加载完成", 
+            f"成功: {success_count} 张\n失败: {fail_count} 张\n总计: {len(image_files)} 张")
+    
+    def send_command_to_robot(self, command, timeout=2.0):
+        """向机械臂发送TCP命令并接收响应"""
+        self.update_config_from_ui()
+        robot_ip = self.config["robot_net"]["robot_ip"]
+        robot_port = self.config["robot_net"]["robot_port"]
+        
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            
+            sock.connect((robot_ip, robot_port))
+            self.log(f"已连接到机械臂 {robot_ip}:{robot_port}")
+            
+            # 发送命令（使用回车符）
+            cmd = command + '\r'
+            sock.sendall(cmd.encode('utf-8'))
+            self.log(f"已发送命令: {command}")
+            
+            # 接收响应
+            response = b''
+            sock.settimeout(1.0)
+            try:
+                while True:
+                    chunk = sock.recv(1024)
+                    if not chunk:
+                        break
+                    response += chunk
+                    if b'\n' in chunk or b'\r' in chunk:
+                        break
+            except socket.timeout:
+                pass
+            
+            response_str = response.decode('utf-8').strip()
+            if response_str:
+                self.log(f"收到响应: {response_str}")
+            
+            sock.close()
+            return True, response_str if response_str else "未收到响应"
+            
+        except socket.timeout:
+            self.log(f"[错误] 连接超时")
+            return False, "连接超时"
+        except ConnectionRefusedError:
+            self.log(f"[错误] 连接被拒绝")
+            return False, "连接被拒绝"
+        except Exception as e:
+            self.log(f"[错误] 连接失败: {e}")
+            return False, str(e)
+    
+    def parse_robot_pose(self, response_str):
+        """解析机械臂返回的坐标数据"""
+        try:
+            response_str = response_str.strip().replace('\r', '').replace('\n', '')
+            
+            if "," in response_str:
+                parts = response_str.split(",")
+                parts = [p.strip() for p in parts if p.strip()]
+                
+                # 跳过前缀
+                if len(parts) > 0 and parts[0].upper() in ["OK", "SUCCESS"]:
+                    parts = parts[1:]
+                
+                if len(parts) >= 6:
+                    pose = [float(p) for p in parts[:6]]
+                    self.log(f"解析成功: X={pose[0]:.2f}, Y={pose[1]:.2f}, Z={pose[2]:.2f}, "
+                            f"Rx={pose[3]:.2f}, Ry={pose[4]:.2f}, Rz={pose[5]:.2f}")
+                    return True, pose
+                else:
+                    self.log(f"[错误] 数据不足6个: {len(parts)}个")
+                    return False, None
+            else:
+                self.log(f"[错误] 响应格式错误（无逗号分隔）")
+                return False, None
+                
+        except ValueError as e:
+            self.log(f"[错误] 解析失败: {e}")
+            return False, None
+    
+    def get_robot_pose_for_selected(self):
+        """获取选中行的机械臂位姿"""
+        sel = self.tree_calib.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选中一行数据")
+            return
+        
+        idx = self.tree_calib.index(sel[0])
+        if idx >= len(self.calib_data_list):
+            messagebox.showerror("错误", "数据索引错误")
+            return
+        
+        self.lbl_pose_status.config(text="正在获取坐标...", fg="blue")
+        self.root.update()
+        
+        # 发送tcp_pose命令
+        timeout = self.config["robot_net"].get("timeout", 2.0)
+        success, response = self.send_command_to_robot("tcp_pose", timeout)
         
         if success:
-            # 使用solvePnP计算标定板相对于相机的位姿
-            success_pnp, rvec, tvec = cv2.solvePnP(objp, corners, K, D)
+            parse_ok, pose = self.parse_robot_pose(response)
+            if parse_ok:
+                self.calib_data_list[idx]["robot_pose"] = pose
+                self.refresh_calib_list()
+                self.save_calib_data(show_message=False)
+                self.lbl_pose_status.config(text=f"✓ 已获取位姿", fg="green")
+                messagebox.showinfo("成功", 
+                    f"已成功获取位姿:\n"
+                    f"X: {pose[0]:.2f} mm\n"
+                    f"Y: {pose[1]:.2f} mm\n"
+                    f"Z: {pose[2]:.2f} mm\n"
+                    f"Rx: {pose[3]:.2f}°\n"
+                    f"Ry: {pose[4]:.2f}°\n"
+                    f"Rz: {pose[5]:.2f}°")
+            else:
+                self.lbl_pose_status.config(text="✗ 解析失败", fg="red")
+                messagebox.showerror("错误", f"无法解析返回数据:\n{response}")
+        else:
+            self.lbl_pose_status.config(text="✗ 连接失败", fg="red")
+            messagebox.showerror("错误", f"无法连接机械臂:\n{response}")
+    
+    def manual_input_pose(self):
+        """手动输入机械臂位姿"""
+        sel = self.tree_calib.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选中一行数据")
+            return
+        
+        idx = self.tree_calib.index(sel[0])
+        if idx >= len(self.calib_data_list):
+            messagebox.showerror("错误", "数据索引错误")
+            return
+        
+        # 创建输入对话框
+        win = tk.Toplevel(self.root)
+        win.title("手动输入机械臂位姿")
+        win.geometry("600x200")
+        win.transient(self.root)
+        win.grab_set()
+        
+        tk.Label(win, text="请输入机械臂当前位姿", font=("Arial", 11, "bold")).pack(pady=10)
+        
+        f_main = tk.Frame(win)
+        f_main.pack(pady=10)
+        
+        entries = []
+        labels = ["X (mm)", "Y (mm)", "Z (mm)", "Rx (°)", "Ry (°)", "Rz (°)"]
+        
+        # 获取现有位姿作为默认值
+        existing_pose = self.calib_data_list[idx].get("robot_pose")
+        
+        for i, lbl in enumerate(labels):
+            f = tk.Frame(f_main)
+            f.grid(row=0, column=i, padx=8)
+            tk.Label(f, text=lbl, font=("Arial", 9)).pack()
+            e = tk.Entry(f, width=10, font=("Arial", 10))
+            e.pack()
+            if existing_pose:
+                e.insert(0, str(existing_pose[i]))
+            entries.append(e)
+        
+        def confirm():
+            try:
+                vals = [float(e.get()) for e in entries]
+                self.calib_data_list[idx]["robot_pose"] = vals
+                self.refresh_calib_list()
+                self.save_calib_data(show_message=False)
+                self.log(f"已手动输入位姿: X={vals[0]:.2f}, Y={vals[1]:.2f}, Z={vals[2]:.2f}")
+                win.destroy()
+                messagebox.showinfo("成功", "位姿已保存")
+            except ValueError:
+                messagebox.showerror("错误", "请输入有效的数字")
+        
+        f_btn = tk.Frame(win)
+        f_btn.pack(pady=15)
+        tk.Button(f_btn, text="确认保存", command=confirm, bg="#4CAF50", fg="white", 
+                  width=12, height=2).pack(side=tk.LEFT, padx=10)
+        tk.Button(f_btn, text="取消", command=win.destroy, bg="#f44336", fg="white", 
+                  width=12, height=2).pack(side=tk.LEFT, padx=10)
+    
+    def delete_selected_row(self):
+        """删除选中行"""
+        sel = self.tree_calib.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选中要删除的行")
+            return
+        
+        idx = self.tree_calib.index(sel[0])
+        if idx >= len(self.calib_data_list):
+            return
+        
+        data = self.calib_data_list[idx]
+        img_name = os.path.basename(data.get("img_path", ""))
+        
+        if not messagebox.askyesno("确认删除", f"确定要删除第 {idx+1} 行数据吗？\n\n图片: {img_name}"):
+            return
+        
+        del self.calib_data_list[idx]
+        
+        # 重新编号
+        for i, d in enumerate(self.calib_data_list):
+            d["id"] = i + 1
+        
+        self.refresh_calib_list()
+        self.save_calib_data(show_message=False)
+        self.log(f"已删除第 {idx+1} 行数据")
+    
+    def view_calib_image(self, event):
+        """双击查看标定图片"""
+        sel = self.tree_calib.selection()
+        if not sel:
+            return
+        
+        idx = self.tree_calib.index(sel[0])
+        if idx >= len(self.calib_data_list):
+            return
+        
+        data = self.calib_data_list[idx]
+        img_path = data["img_path"]
+        
+        if not os.path.exists(img_path):
+            messagebox.showerror("错误", f"图片不存在: {img_path}")
+            return
+        
+        img = cv2.imread(img_path)
+        if img is None:
+            messagebox.showerror("错误", f"无法读取图片: {img_path}")
+            return
+        
+        # 绘制检测结果
+        corners = data.get("corners")
+        if corners is not None:
+            board_type = self.config["calibration_board"]["type"]
+            rows = self.config["calibration_board"]["rows"]
+            cols = self.config["calibration_board"]["cols"]
             
-            if success_pnp:
-                # 将旋转向量转换为旋转矩阵
+            if board_type == "chessboard":
+                cv2.drawChessboardCorners(img, (cols, rows), corners, True)
+            else:
+                cv2.drawChessboardCorners(img, (cols, rows), corners, True)
+        
+        # 缩放显示
+        h, w = img.shape[:2]
+        max_size = 800
+        if max(h, w) > max_size:
+            scale = max_size / max(h, w)
+            img = cv2.resize(img, (int(w * scale), int(h * scale)))
+        
+        cv2.imshow(f"标定图片 - {os.path.basename(img_path)}", img)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    
+    def test_robot_connection(self):
+        """测试机械臂连接"""
+        self.update_config_from_ui()
+        robot_ip = self.config["robot_net"]["robot_ip"]
+        robot_port = self.config["robot_net"]["robot_port"]
+        timeout = self.config["robot_net"]["timeout"]
+        
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((robot_ip, robot_port))
+            sock.close()
+            messagebox.showinfo("成功", f"成功连接到机械臂\n{robot_ip}:{robot_port}")
+            self.log(f"测试连接成功: {robot_ip}:{robot_port}")
+        except Exception as e:
+            messagebox.showerror("连接失败", f"无法连接到机械臂\n{robot_ip}:{robot_port}\n\n错误: {e}")
+            self.log(f"测试连接失败: {e}")
+    
+    def run_hand_eye_calibration(self):
+        """执行手眼标定"""
+        self.update_config_from_ui()
+        
+        # 获取有效数据
+        valid_data = [d for d in self.calib_data_list if d.get("robot_pose") is not None]
+        
+        if len(valid_data) < 3:
+            messagebox.showwarning("警告", 
+                f"有效数据不足！\n\n"
+                f"当前有效: {len(valid_data)} 组\n"
+                f"至少需要: 3 组\n\n"
+                f"请先获取机械臂位姿（选中数据行后点击'获取机械臂位姿'）")
+            return
+        
+        try:
+            # 准备相机内参
+            fx = self.config["camera_intrinsics"]["fx"]
+            fy = self.config["camera_intrinsics"]["fy"]
+            cx = self.config["camera_intrinsics"]["cx"]
+            cy = self.config["camera_intrinsics"]["cy"]
+            
+            K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+            D = np.array([
+                self.config["distortion_coeffs"]["k1"],
+                self.config["distortion_coeffs"]["k2"],
+                self.config["distortion_coeffs"]["p1"],
+                self.config["distortion_coeffs"]["p2"],
+                self.config["distortion_coeffs"]["k3"]
+            ], dtype=np.float64)
+            
+            objp = get_object_points(self.config)
+            
+            R_all_board_to_cam = []
+            T_all_board_to_cam = []
+            R_all_end_to_base = []
+            T_all_end_to_base = []
+            
+            for d in valid_data:
+                corners = d["corners"]
+                pose = d["robot_pose"]
+                
+                # solvePnP计算标定板相对于相机的位姿
+                success, rvec, tvec = cv2.solvePnP(objp, corners, K, D)
+                if not success:
+                    continue
+                
                 R_board_to_cam, _ = cv2.Rodrigues(rvec)
                 R_all_board_to_cam.append(R_board_to_cam)
                 T_all_board_to_cam.append(tvec)
                 
                 # 计算末端到基座的变换矩阵
-                RT_end_to_base = pose_to_transform_matrix(
+                RT = pose_to_transform_matrix(
                     pose[0], pose[1], pose[2],
                     pose[3], pose[4], pose[5],
-                    config
+                    self.config
                 )
-                R_all_end_to_base.append(RT_end_to_base[:3, :3])
-                T_all_end_to_base.append(RT_end_to_base[:3, 3].reshape((3, 1)))
+                R_all_end_to_base.append(RT[:3, :3])
+                T_all_end_to_base.append(RT[:3, 3].reshape((3, 1)))
+            
+            if len(R_all_board_to_cam) < 3:
+                messagebox.showerror("错误", "有效数据不足")
+                return
+            
+            # 执行手眼标定
+            method = get_hand_eye_method(self.config["hand_eye_method"])
+            R_cam2end, T_cam2end = cv2.calibrateHandEye(
+                R_all_end_to_base, T_all_end_to_base,
+                R_all_board_to_cam, T_all_board_to_cam,
+                method=method
+            )
+            
+            # 构建4x4变换矩阵
+            RT_cam2end = np.column_stack((R_cam2end, T_cam2end))
+            RT_cam2end = np.vstack((RT_cam2end, [[0, 0, 0, 1]]))
+            
+            # 计算欧拉角
+            try:
+                from scipy.spatial.transform import Rotation as Rot
+                euler = Rot.from_matrix(R_cam2end).as_euler('xyz', degrees=True)
+            except:
+                euler = [0, 0, 0]
+            
+            # 显示结果
+            self.txt_result.delete(1.0, tk.END)
+            self.txt_result.insert(tk.END, "=" * 60 + "\n")
+            self.txt_result.insert(tk.END, "手眼标定结果 (Camera to End-Effector)\n")
+            self.txt_result.insert(tk.END, "=" * 60 + "\n\n")
+            
+            self.txt_result.insert(tk.END, "【旋转矩阵 (3x3)】\n")
+            for i in range(3):
+                row_str = "  ["
+                for j in range(3):
+                    row_str += f"{R_cam2end[i, j]:12.8f}"
+                    if j < 2:
+                        row_str += ", "
+                row_str += "]\n"
+                self.txt_result.insert(tk.END, row_str)
+            
+            self.txt_result.insert(tk.END, "\n【平移向量 (mm)】\n")
+            self.txt_result.insert(tk.END, f"  X = {T_cam2end[0][0]:12.4f} mm\n")
+            self.txt_result.insert(tk.END, f"  Y = {T_cam2end[1][0]:12.4f} mm\n")
+            self.txt_result.insert(tk.END, f"  Z = {T_cam2end[2][0]:12.4f} mm\n")
+            
+            self.txt_result.insert(tk.END, "\n【欧拉角 (xyz顺序, 度)】\n")
+            self.txt_result.insert(tk.END, f"  Rx = {euler[0]:12.4f}°\n")
+            self.txt_result.insert(tk.END, f"  Ry = {euler[1]:12.4f}°\n")
+            self.txt_result.insert(tk.END, f"  Rz = {euler[2]:12.4f}°\n")
+            
+            self.txt_result.insert(tk.END, "\n【变换矩阵 (4x4)】\n")
+            for i in range(4):
+                row_str = "  ["
+                for j in range(4):
+                    row_str += f"{RT_cam2end[i, j]:12.8f}"
+                    if j < 3:
+                        row_str += ", "
+                row_str += "]\n"
+                self.txt_result.insert(tk.END, row_str)
+            
+            self.txt_result.insert(tk.END, "\n" + "=" * 60 + "\n")
+            self.txt_result.insert(tk.END, f"使用数据: {len(R_all_board_to_cam)} 组\n")
+            self.txt_result.insert(tk.END, f"标定方法: {self.config['hand_eye_method']}\n")
+            
+            # 验证结果
+            self.txt_result.insert(tk.END, "\n" + "=" * 60 + "\n")
+            self.txt_result.insert(tk.END, "标定结果验证\n")
+            self.txt_result.insert(tk.END, "=" * 60 + "\n")
+            
+            positions = []
+            for i in range(len(R_all_board_to_cam)):
+                RT_end_to_base = np.column_stack((R_all_end_to_base[i], T_all_end_to_base[i]))
+                RT_end_to_base = np.vstack((RT_end_to_base, [[0, 0, 0, 1]]))
                 
-                valid_indices.append(i)
-                print(f"  [{i+1}] ✓ 检测成功: {os.path.basename(img_file)}")
+                RT_board_to_cam = np.column_stack((R_all_board_to_cam[i], T_all_board_to_cam[i]))
+                RT_board_to_cam = np.vstack((RT_board_to_cam, [[0, 0, 0, 1]]))
+                
+                RT_board_to_base = RT_end_to_base @ RT_cam2end @ RT_board_to_cam
+                RT_base_to_board = np.linalg.inv(RT_board_to_base)
+                
+                positions.append(RT_base_to_board[:3, 3])
+                self.txt_result.insert(tk.END, 
+                    f"第{i+1}组: X={RT_base_to_board[0,3]:.2f}, Y={RT_base_to_board[1,3]:.2f}, Z={RT_base_to_board[2,3]:.2f}\n")
+            
+            positions = np.array(positions)
+            std_pos = np.std(positions, axis=0)
+            total_std = np.sqrt(np.sum(std_pos**2))
+            
+            self.txt_result.insert(tk.END, f"\n标准差: X={std_pos[0]:.2f}, Y={std_pos[1]:.2f}, Z={std_pos[2]:.2f} mm\n")
+            self.txt_result.insert(tk.END, f"综合标准差: {total_std:.2f} mm\n")
+            
+            if total_std < 5:
+                self.txt_result.insert(tk.END, "评估: ★★★ 标定精度优秀！\n")
+            elif total_std < 10:
+                self.txt_result.insert(tk.END, "评估: ★★☆ 标定精度良好\n")
+            elif total_std < 20:
+                self.txt_result.insert(tk.END, "评估: ★☆☆ 标定精度一般\n")
             else:
-                print(f"  [{i+1}] ✗ PnP求解失败: {os.path.basename(img_file)}")
-        else:
-            print(f"  [{i+1}] ✗ 标定板检测失败: {os.path.basename(img_file)}")
-    
-    # 检查有效数据数量
-    if len(valid_indices) < 3:
-        raise ValueError(
-            f"有效标定数据不足！成功检测 {len(valid_indices)} 组，至少需要 3 组。\n"
-            f"请检查标定板配置是否正确，或增加更多标定图片。"
-        )
-    
-    print(f"\n[数据统计]")
-    print(f"  总图片数: {len(image_files)}")
-    print(f"  有效数据: {len(valid_indices)} 组")
-    
-    # 执行手眼标定 (保留原有算法)
-    method = get_hand_eye_method(config.get("hand_eye_method", "TSAI"))
-    print(f"\n[执行手眼标定]")
-    print(f"  方法: {config.get('hand_eye_method', 'TSAI')}")
-    
-    R_cam2end, T_cam2end = cv2.calibrateHandEye(
-        R_all_end_to_base, T_all_end_to_base,
-        R_all_board_to_cam, T_all_board_to_cam,
-        method=method
-    )
-    
-    # 构建4x4变换矩阵
-    RT_cam2end = np.column_stack((R_cam2end, T_cam2end))
-    RT_cam2end = np.vstack((RT_cam2end, [[0, 0, 0, 1]]))
-    
-    return R_cam2end, T_cam2end, RT_cam2end, \
-           R_all_board_to_cam, T_all_board_to_cam, \
-           R_all_end_to_base, T_all_end_to_base, valid_indices
-
-
-def verify_calibration_result(R_cam2end, T_cam2end,
-                               R_all_board_to_cam, T_all_board_to_cam,
-                               R_all_end_to_base, T_all_end_to_base):
-    """
-    验证手眼标定结果
-    
-    原理: 标定板相对于基座的位姿应该是固定的
-    RT_board_to_base = RT_end_to_base @ RT_cam2end @ RT_board_to_cam
-    """
-    print("\n" + "=" * 60)
-    print("标定结果验证")
-    print("=" * 60)
-    print("(原理: 标定板相对于基座的位姿应保持一致)")
-    print("-" * 60)
-    
-    # 构建cam2end变换矩阵
-    RT_cam2end = np.column_stack((R_cam2end, T_cam2end))
-    RT_cam2end = np.vstack((RT_cam2end, [[0, 0, 0, 1]]))
-    
-    positions = []
-    
-    for i in range(len(R_all_board_to_cam)):
-        # 构建末端到基座的变换矩阵
-        RT_end_to_base = np.column_stack((R_all_end_to_base[i], T_all_end_to_base[i]))
-        RT_end_to_base = np.vstack((RT_end_to_base, [[0, 0, 0, 1]]))
-        
-        # 构建标定板到相机的变换矩阵
-        RT_board_to_cam = np.column_stack((R_all_board_to_cam[i], T_all_board_to_cam[i]))
-        RT_board_to_cam = np.vstack((RT_board_to_cam, [[0, 0, 0, 1]]))
-        
-        # 计算标定板相对于基座的位姿
-        RT_board_to_base = RT_end_to_base @ RT_cam2end @ RT_board_to_cam
-        RT_base_to_board = np.linalg.inv(RT_board_to_base)
-        
-        print(f"\n第 {i+1} 组数据:")
-        print(f"  标定板在基座坐标系下的位姿矩阵:")
-        for row in RT_base_to_board[:3, :]:
-            print(f"    [{row[0]:12.4f} {row[1]:12.4f} {row[2]:12.4f} {row[3]:12.4f}]")
-        
-        positions.append(RT_base_to_board[:3, 3])
-    
-    # 计算位置偏差
-    positions = np.array(positions)
-    mean_pos = np.mean(positions, axis=0)
-    std_pos = np.std(positions, axis=0)
-    max_deviation = np.max(np.abs(positions - mean_pos), axis=0)
-    
-    print("\n" + "-" * 60)
-    print("位置一致性分析:")
-    print(f"  平均位置: X={mean_pos[0]:.2f}, Y={mean_pos[1]:.2f}, Z={mean_pos[2]:.2f} mm")
-    print(f"  标准差:   X={std_pos[0]:.2f}, Y={std_pos[1]:.2f}, Z={std_pos[2]:.2f} mm")
-    print(f"  最大偏差: X={max_deviation[0]:.2f}, Y={max_deviation[1]:.2f}, Z={max_deviation[2]:.2f} mm")
-    
-    total_std = np.sqrt(np.sum(std_pos**2))
-    print(f"\n  综合标准差: {total_std:.2f} mm")
-    
-    if total_std < 5:
-        print("  [评估] ★★★ 标定精度优秀！")
-    elif total_std < 10:
-        print("  [评估] ★★☆ 标定精度良好")
-    elif total_std < 20:
-        print("  [评估] ★☆☆ 标定精度一般，建议重新采集数据")
-    else:
-        print("  [评估] ☆☆☆ 标定精度较差，请检查数据质量")
-    
-    return mean_pos, std_pos
-
-
-def save_results(R_cam2end, T_cam2end, RT_cam2end, config):
-    """保存标定结果"""
-    output_dir = config["paths"]["output_dir"]
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # 保存变换矩阵到文本文件
-    matrix_file = os.path.join(output_dir, "cam2end.txt")
-    with open(matrix_file, 'w') as f:
-        f.write("# 相机到末端的变换矩阵 (4x4)\n")
-        f.write("# Camera to End-Effector Transformation Matrix\n")
-        for row in RT_cam2end:
-            f.write(' '.join(map(str, row)) + '\n')
-    
-    # 保存详细结果到JSON
-    result = {
-        "rotation_matrix": R_cam2end.tolist(),
-        "translation_vector": T_cam2end.flatten().tolist(),
-        "transformation_matrix_4x4": RT_cam2end.tolist(),
-        "camera_intrinsics": config["camera_intrinsics"],
-        "distortion_coeffs": config["distortion_coeffs"],
-        "calibration_board": config["calibration_board"]
-    }
-    
-    json_file = os.path.join(output_dir, "calibration_result.json")
-    with open(json_file, 'w', encoding='utf-8') as f:
-        json.dump(result, f, indent=4, ensure_ascii=False)
-    
-    print(f"\n[保存] 结果已保存到:")
-    print(f"  变换矩阵: {matrix_file}")
-    print(f"  完整结果: {json_file}")
-
-
-def print_final_result(R_cam2end, T_cam2end, RT_cam2end):
-    """打印最终标定结果"""
-    print("\n" + "=" * 60)
-    print("手眼标定最终结果")
-    print("=" * 60)
-    
-    print("\n【手眼矩阵分解得到的旋转矩阵】")
-    print(R_cam2end)
-    
-    print("\n【手眼矩阵分解得到的平移矩阵】")
-    print(T_cam2end)
-    
-    print("\n【相机相对于末端的变换矩阵 (4x4)】")
-    print(RT_cam2end)
-    
-    # 提取欧拉角 (使用scipy或手动计算)
-    try:
-        from scipy.spatial.transform import Rotation as Rot
-        euler = Rot.from_matrix(R_cam2end).as_euler('xyz', degrees=True)
-        print(f"\n【欧拉角 (xyz顺序, 度)】")
-        print(f"  Rx = {euler[0]:.4f}°")
-        print(f"  Ry = {euler[1]:.4f}°")
-        print(f"  Rz = {euler[2]:.4f}°")
-    except ImportError:
-        pass
-    
-    print(f"\n【平移分量 (mm)】")
-    print(f"  X = {T_cam2end[0][0]:.4f} mm")
-    print(f"  Y = {T_cam2end[1][0]:.4f} mm")
-    print(f"  Z = {T_cam2end[2][0]:.4f} mm")
+                self.txt_result.insert(tk.END, "评估: ☆☆☆ 标定精度较差\n")
+            
+            # 保存结果
+            output_dir = self.config["paths"]["output_dir"]
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # 保存变换矩阵
+            matrix_file = os.path.join(output_dir, "cam2end.txt")
+            with open(matrix_file, 'w') as f:
+                f.write("# 相机到末端的变换矩阵 (4x4)\n")
+                for row in RT_cam2end:
+                    f.write(' '.join(map(str, row)) + '\n')
+            
+            # 保存JSON结果
+            result = {
+                "rotation_matrix": R_cam2end.tolist(),
+                "translation_vector": T_cam2end.flatten().tolist(),
+                "transformation_matrix_4x4": RT_cam2end.tolist(),
+                "euler_angles_xyz_deg": list(euler),
+                "camera_intrinsics": self.config["camera_intrinsics"],
+                "calibration_board": self.config["calibration_board"]
+            }
+            
+            json_file = os.path.join(output_dir, "calibration_result.json")
+            with open(json_file, 'w', encoding='utf-8') as f:
+                json.dump(result, f, indent=4, ensure_ascii=False)
+            
+            self.txt_result.insert(tk.END, f"\n结果已保存到: {output_dir}\n")
+            
+            self.log("手眼标定完成！")
+            messagebox.showinfo("成功", "手眼标定完成！\n\n结果已显示在'标定结果'页面")
+            
+        except Exception as e:
+            self.log(f"[错误] 标定失败: {e}")
+            messagebox.showerror("错误", f"标定失败: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 # =============================================================================
-# 主程序
+# 主程序入口
 # =============================================================================
 
 def main():
-    """主程序入口"""
-    # 设置NumPy打印选项
     np.set_printoptions(suppress=True, precision=8)
     
-    print("\n" + "=" * 60)
-    print("手眼标定程序 v2.0")
-    print("配置文件驱动版 - 支持棋盘格和圆点标定板")
-    print("=" * 60)
-    
-    # 加载配置
-    config = load_config()
-    
-    # 检查关键路径是否存在
-    image_dir = config["paths"]["image_dir"]
-    pose_file = config["paths"]["robot_pose_file"]
-    
-    if not os.path.exists(image_dir):
-        print(f"\n[错误] 图片目录不存在: {image_dir}")
-        print(f"[提示] 请创建目录并放入标定图片，或修改配置文件中的 paths.image_dir")
-        os.makedirs(image_dir, exist_ok=True)
-        print(f"[提示] 已为您创建空目录: {image_dir}")
-        return
-    
-    if not os.path.exists(pose_file):
-        print(f"\n[错误] 机械臂位姿文件不存在: {pose_file}")
-        print(f"[提示] 请创建位姿文件，格式为每行: x,y,z,rx,ry,rz")
-        # 创建示例文件
-        example_content = """# 机械臂末端位姿文件
-# 格式: x,y,z,rx,ry,rz (单位: mm, 弧度或度，根据配置)
-# 每行对应一张标定图片
-# 示例:
-# 100.0, 200.0, 300.0, 0.1, 0.2, 0.3
-"""
-        with open(pose_file, 'w') as f:
-            f.write(example_content)
-        print(f"[提示] 已为您创建示例位姿文件: {pose_file}")
-        return
-    
-    try:
-        # 执行手眼标定
-        R_cam2end, T_cam2end, RT_cam2end, \
-        R_all_board_to_cam, T_all_board_to_cam, \
-        R_all_end_to_base, T_all_end_to_base, valid_indices = run_hand_eye_calibration(config)
-        
-        # 打印最终结果
-        print_final_result(R_cam2end, T_cam2end, RT_cam2end)
-        
-        # 验证标定结果
-        verify_calibration_result(
-            R_cam2end, T_cam2end,
-            R_all_board_to_cam, T_all_board_to_cam,
-            R_all_end_to_base, T_all_end_to_base
-        )
-        
-        # 保存结果
-        save_results(R_cam2end, T_cam2end, RT_cam2end, config)
-        
-        print("\n" + "=" * 60)
-        print("手眼标定完成！")
-        print("=" * 60)
-        
-    except FileNotFoundError as e:
-        print(f"\n[错误] {e}")
-    except ValueError as e:
-        print(f"\n[错误] {e}")
-    except Exception as e:
-        print(f"\n[错误] 标定过程中发生异常: {e}")
-        import traceback
-        traceback.print_exc()
+    root = tk.Tk()
+    app = HandEyeCalibrationApp(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
