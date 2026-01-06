@@ -1,0 +1,30 @@
+{
+    "camera": {
+        "fx": 0.0,
+        "fy": 0.0,
+        "cx": 0.0,
+        "cy": 0.0,
+        "dist": [0, 0, 0, 0, 0]
+    },
+    "calibration": {
+        "type": "chessboard",
+        "rows": 7,
+        "cols": 9,
+        "spacing": 25.0,
+        "refine_corners": true
+    },
+    "dataset": {
+        "images_dir": "./images",
+        "image_extensions": [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"],
+        "data_file": "./calibration_data.json",
+        "pose_file": "./images/pos.txt",
+        "pose_angle_unit": "rad",
+        "pose_is_base_to_gripper": true
+    },
+    "output": {
+        "cam2end_path": "./cam2end.txt",
+        "report_path": "./handeye_report.json"
+    },
+    "handeye_method": ""
+}
+

@@ -1,0 +1,15 @@
+[
+    {
+        "img_path": "0001.jpg",
+        "robot_pose": [0, 0, 0, 0, 0, 0]
+    },
+    {
+        "img_path": "0002.jpg",
+        "robot_pose": [0, 0, 0, 0, 0, 0]
+    },
+    {
+        "img_path": "0003.jpg",
+        "robot_pose": [0, 0, 0, 0, 0, 0]
+    }
+]
+
