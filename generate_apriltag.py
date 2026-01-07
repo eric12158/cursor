@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import argparse
 import sys
+import os
 
 def get_tag_family_dict(family_name):
     """
@@ -36,6 +37,15 @@ def generate_apriltag(tag_family, tag_id, size_pixels, output_path):
     
     print(f"Generating AprilTag: Family={tag_family}, ID={tag_id}, Size={size_pixels}px")
     
+    # Ensure directory exists
+    output_dir = os.path.dirname(output_path)
+    if output_dir and not os.path.exists(output_dir):
+        try:
+            os.makedirs(output_dir)
+            print(f"Created directory: {output_dir}")
+        except Exception as e:
+            print(f"Warning: Could not create directory {output_dir}: {e}")
+    
     # Get the dictionary
     aruco_dict_id = get_tag_family_dict(tag_family)
     if aruco_dict_id is None:
@@ -64,7 +74,10 @@ if __name__ == "__main__":
     DEFAULT_FAMILY = "tag36h11"
     DEFAULT_ID = 0
     DEFAULT_SIZE = 500  # pixels
-    DEFAULT_OUTPUT = "apriltag.png"
+    
+    # Default path as requested
+    save_dir = r"D:\Other\Users\ENGINEER\Desktop"
+    DEFAULT_OUTPUT = os.path.join(save_dir, "apriltag.png")
 
     parser = argparse.ArgumentParser(description="Generate AprilTag images.")
     parser.add_argument("--family", type=str, default=DEFAULT_FAMILY, help="Tag family (e.g., tag36h11, tag25h9, tag16h5)")
