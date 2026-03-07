@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+stock_picker/data/cache/
+stock_picker/output/
