@@ -65,10 +65,12 @@ function M.recv_line()
 
     local line, recv_err, partial = M.client:receive("*l")
     if line then
+        log("rx <- " .. tostring(line))
         return line
     end
 
     if recv_err == "timeout" and partial and partial ~= "" then
+        log("rx partial <- " .. tostring(partial))
         return partial
     end
 

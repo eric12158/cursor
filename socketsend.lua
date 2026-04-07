@@ -32,5 +32,5 @@ hmi.client:settimeout(DEFAULT_READ_TIMEOUT_SEC)
 if rx then
     log("rx=" .. tostring(rx))
 else
-    log("no reply")
+    log("no reply within " .. tostring(WAIT_REPLY_TIMEOUT_SEC) .. "s")
 end
