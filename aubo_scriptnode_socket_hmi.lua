@@ -1,8 +1,8 @@
 -- AUBO ARCS/AuboStudio ScriptNode example
 -- Purpose:
 -- 1) Actively connect to an HMI TCP socket server.
--- 2) Send one line to the HMI and wait for one reply line.
--- 3) Optionally keep the socket open for later use.
+-- 2) Send a connected flag immediately after the socket is up.
+-- 3) Keep the socket alive and continue receiving commands.
 --
 -- Important:
 -- This version requires the runtime to provide LuaSocket via require("socket").
@@ -16,7 +16,9 @@ local HMI_IP = "192.168.192.25"
 local HMI_PORT = 9000
 local HMI_CONNECT_TIMEOUT_SEC = 3
 local HMI_READ_TIMEOUT_SEC = 1
-local HMI_KEEP_OPEN = true
+local HMI_CONNECTED_FLAG = "ROBOT_CONNECTED"
+local HMI_HEARTBEAT_ENABLED = false
+local HMI_HEARTBEAT_INTERVAL_SEC = 5
 
 local g_hmi_socket = nil
 
@@ -97,7 +99,9 @@ local function recv_hmi_line()
         return partial
     end
 
-    log("receive failed: " .. tostring(recv_err))
+    if recv_err ~= "timeout" then
+        log("receive failed: " .. tostring(recv_err))
+    end
     return nil
 end
 
@@ -117,22 +121,68 @@ local function close_hmi_socket()
     log("socket closed")
 end
 
-local function run_demo_exchange()
+local function handle_hmi_command(line)
+    if line == "PING" then
+        send_hmi_line("PONG")
+        return true
+    end
+
+    if line == "GET_STATUS" then
+        if G_HMI_CONNECTED then
+            send_hmi_line("STATUS:CONNECTED")
+        else
+            send_hmi_line("STATUS:DISCONNECTED")
+        end
+        return true
+    end
+
+    if line == "CLOSE" then
+        send_hmi_line("BYE")
+        close_hmi_socket()
+        return false
+    end
+
+    send_hmi_line("UNKNOWN_CMD:" .. tostring(line))
+    return true
+end
+
+local function keep_hmi_session_alive(socket)
+    local last_heartbeat_ts = os.time()
+
+    while G_HMI_CONNECTED do
+        local rx = recv_hmi_line()
+        if rx then
+            local should_continue = handle_hmi_command(rx)
+            if not should_continue then
+                return
+            end
+        end
+
+        if HMI_HEARTBEAT_ENABLED then
+            local now_ts = os.time()
+            if now_ts - last_heartbeat_ts >= HMI_HEARTBEAT_INTERVAL_SEC then
+                if not send_hmi_line("HEARTBEAT") then
+                    close_hmi_socket()
+                    return
+                end
+                last_heartbeat_ts = now_ts
+            end
+        end
+    end
+end
+
+local function run_persistent_session()
     if not connect_hmi_socket() then
         log("HMI socket setup failed")
         return
     end
 
-    send_hmi_line("ROBOT_HELLO")
-    local rx = recv_hmi_line()
-
-    if rx then
-        send_hmi_line("ROBOT_ACK:" .. tostring(rx))
-    end
-
-    if not HMI_KEEP_OPEN then
+    if not send_hmi_line(HMI_CONNECTED_FLAG) then
         close_hmi_socket()
+        return
     end
+
+    keep_hmi_session_alive()
 end
 
-run_demo_exchange()
+run_persistent_session()
