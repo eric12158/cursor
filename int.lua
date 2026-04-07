@@ -1,8 +1,6 @@
-local HMI_IP = "192.168.192.25"
-local HMI_PORT = 9000
-local HMI_CONNECT_TIMEOUT_SEC = 3
-local HMI_READ_TIMEOUT_SEC = 2
-local HMI_CONNECTED_FLAG = "ROBOT_CONNECTED"
+local host = "192.168.192.25"
+local port = 9000
+local HMI_CONNECTED_FLAG = "client successfully connect!"
 
 local M = rawget(_G, "HMI_SOCKET") or {}
 
@@ -15,30 +13,21 @@ function M.ensure_connected()
         return true
     end
 
-    local ok, socket_or_err = pcall(require, "socket")
+    local ok, socket = pcall(require, "socket")
     if not ok then
-        log("require(\"socket\") failed: " .. tostring(socket_or_err))
+        log("require(\"socket\") failed: " .. tostring(socket))
         return false
     end
 
-    local client, create_err = socket_or_err.tcp()
+    local client, err = socket.connect(host, port)
     if not client then
-        log("socket.tcp() failed: " .. tostring(create_err))
+        log("connect failed: " .. tostring(err))
         return false
     end
 
-    client:settimeout(HMI_CONNECT_TIMEOUT_SEC)
-
-    local connected, connect_err = client:connect(HMI_IP, HMI_PORT)
-    if connected ~= 1 and connected ~= true then
-        log("connect failed: " .. tostring(connect_err))
-        client:close()
-        return false
-    end
-
-    client:settimeout(HMI_READ_TIMEOUT_SEC)
+    client:settimeout(0)
     M.client = client
-    log("connected to HMI " .. HMI_IP .. ":" .. tostring(HMI_PORT))
+    log("client connected to HMI " .. host .. ":" .. tostring(port))
     return true
 end
 
@@ -63,34 +52,22 @@ function M.recv_line()
         return nil
     end
 
-    local line, recv_err, partial = M.client:receive("*l")
+    local line, recv_err, partial = M.client:receive()
     if line then
         log("rx <- " .. tostring(line))
         return line
     end
 
-    if recv_err == "timeout" and partial and partial ~= "" then
+    if partial and partial ~= "" then
         log("rx partial <- " .. tostring(partial))
         return partial
     end
 
-    if recv_err ~= "timeout" then
+    if recv_err and recv_err ~= "timeout" then
         log("receive failed: " .. tostring(recv_err))
     end
 
     return nil
-end
-
-function M.send_and_wait(payload)
-    if not M.ensure_connected() then
-        return nil
-    end
-
-    if not M.send(payload) then
-        return nil
-    end
-
-    return M.recv_line()
 end
 
 function M.close()
