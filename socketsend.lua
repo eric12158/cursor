@@ -9,6 +9,7 @@ if not hmi then
 end
 
 local WAIT_REPLY_TIMEOUT_SEC = 120
+local DEFAULT_READ_TIMEOUT_SEC = 2
 
 -- Replace this string later with your real business payload.
 local tx = "WAITING_FOR_BUSINESS_PAYLOAD"
@@ -18,8 +19,15 @@ if not ok then
     return
 end
 
+if not hmi.send(tx) then
+    log("send failed")
+    return
+end
+
 log("tx sent, waiting up to " .. tostring(WAIT_REPLY_TIMEOUT_SEC) .. "s for HMI reply")
-local rx = hmi.send_and_wait(tx, WAIT_REPLY_TIMEOUT_SEC)
+hmi.client:settimeout(WAIT_REPLY_TIMEOUT_SEC)
+local rx = hmi.recv_line()
+hmi.client:settimeout(DEFAULT_READ_TIMEOUT_SEC)
 
 if rx then
     log("rx=" .. tostring(rx))
