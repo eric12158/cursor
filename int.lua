@@ -1,7 +1,7 @@
 -- HMI socket init / shared helper
 -- Port is fixed to the normal TCP socket service on 9000.
--- If another ScriptNode runs in the same Lua runtime, it can reuse HMI_SOCKET.
--- If not, require("int") will initialize the connection again.
+-- This script stores the live connection object in _G.HMI_SOCKET.
+-- Other ScriptNode files should read _G.HMI_SOCKET directly instead of require("int").
 
 local M = rawget(_G, "HMI_SOCKET") or {}
 
