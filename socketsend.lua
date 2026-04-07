@@ -16,7 +16,7 @@ local WAIT_REPLY_TIMEOUT_SEC = 120
 
 -- Replace this string later with your real business payload.
 local tx = "WAITING_FOR_BUSINESS_PAYLOAD"
-hmi.clear_buffer()
+hmi.clear()
 LOG("[socket-send] buffer cleared")
 local ok, send_err = hmi.client:send(tx .. "\n")
 if not ok then

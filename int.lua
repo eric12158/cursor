@@ -17,7 +17,7 @@ local client = assert(socket.connect(host, port))
 client:settimeout(0)
 _G.HMI_SOCKET = {
     client = client,
-    clear_buffer = function()
+    clear = function()
         while true do
             local data, err, partial = client:receive()
             if data and data ~= "" then
