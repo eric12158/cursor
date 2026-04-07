@@ -2,6 +2,7 @@ local HMI_IP = "192.168.192.25"
 local HMI_PORT = 9000
 local HMI_CONNECT_TIMEOUT_SEC = 3
 local HMI_READ_TIMEOUT_SEC = 2
+local HMI_WAIT_REPLY_TIMEOUT_SEC = 120
 local HMI_CONNECTED_FLAG = "ROBOT_CONNECTED"
 
 local M = rawget(_G, "HMI_SOCKET") or {}
@@ -79,7 +80,35 @@ function M.recv_line()
     return nil
 end
 
-function M.send_and_wait(payload)
+function M.recv_line_with_timeout(timeout_sec)
+    if not M.client then
+        log("receive skipped: socket is not connected")
+        return nil
+    end
+
+    local timeout = timeout_sec or HMI_WAIT_REPLY_TIMEOUT_SEC
+    M.client:settimeout(timeout)
+    local line, recv_err, partial = M.client:receive("*l")
+    M.client:settimeout(HMI_READ_TIMEOUT_SEC)
+
+    if line then
+        return line
+    end
+
+    if recv_err == "timeout" and partial and partial ~= "" then
+        return partial
+    end
+
+    if recv_err ~= "timeout" then
+        log("receive failed: " .. tostring(recv_err))
+    else
+        log("wait reply timeout after " .. tostring(timeout) .. "s")
+    end
+
+    return nil
+end
+
+function M.send_and_wait(payload, timeout_sec)
     if not M.ensure_connected() then
         return nil
     end
@@ -88,7 +117,7 @@ function M.send_and_wait(payload)
         return nil
     end
 
-    return M.recv_line()
+    return M.recv_line_with_timeout(timeout_sec)
 end
 
 function M.close()
