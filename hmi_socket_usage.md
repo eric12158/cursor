@@ -3,7 +3,7 @@
 适用场景：
 
 - HMI 作为普通 TCP Socket 服务端，监听 `9000`
-- `int.lua` 负责初始化连接
+- `int.lua` 负责初始化连接，并注册全局 `LOG()`
 - 业务脚本负责发送业务报文并等待 HMI 回包
 
 ## 1. 关键结论
@@ -30,13 +30,14 @@
 
 1. 连接 HMI
 2. 把连接对象保存到 `_G.HMI_SOCKET`
-3. 发送连接成功标志
+3. 注册全局 `LOG()` 并发送连接成功标志
 
 参考 `int.lua`：
 
 - 使用 `require("socket")`
 - 使用 `socket.connect(host, port)`
 - 连接成功后 `client:settimeout(0)`
+- 注册 `_G.LOG = function(...) ... end`
 - 保存到 `_G.HMI_SOCKET`
 - 发送 `client successfully connect!`
 
@@ -132,5 +133,5 @@ end
 
 ## 8. 当前文件职责
 
-- `int.lua`：初始化连接、保存 `_G.HMI_SOCKET`、发送连接成功标志
+- `int.lua`：初始化连接、注册全局 `LOG()`、保存 `_G.HMI_SOCKET`、发送连接成功标志
 - `socketsend.lua`：业务发送、等待回包、打印日志、超时报错
